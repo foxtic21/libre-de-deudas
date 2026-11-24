@@ -1,0 +1,14 @@
+# Datos personales: NUNCA se suben (el repo es público)
+mis-datos-iniciales.json
+libre-copia-*.json
+libre-de-deudas-*.json
+*.backup.json
+
+# Versión anterior (tiene datos personales escritos en el código)
+libre-de-deudas.html
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.claude/
