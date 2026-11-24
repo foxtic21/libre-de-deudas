@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.5.0';
+import * as Store from './store.js?v=2.5.1';
 
 /* =========================================================================
    Utilidades
@@ -1304,7 +1304,7 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.5.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.5.1</p>`;
 }
 
 /* =========================================================================
@@ -1844,8 +1844,8 @@ function fijosSection() {
       <p class="gf">Se pagan primero, el día que cobrás: alquiler, contadora y ANDE adelante de todo.</p>`
     : `<div class="group ic">${cellLink('newFijo', 'pin', 'blue', 'Cargá tus gastos fijos', 'Alquiler, contadora, ANDE, internet, celular…')}</div>`);
 }
-function fijoForm(id, sugI) {
-  const f = id ? fijo(id) : Object.assign({ name: '', amt: 0, dia: 5, prio: 1, amb: 'personal', cat: 'servicios', sym: 'pin', color: 'blue', iva: '10' }, sugI != null ? FIJO_SUG[sugI] : {});
+function fijoForm(id, sugI, pre = {}) {
+  const f = id ? fijo(id) : Object.assign({ name: '', amt: 0, dia: 5, prio: 1, amb: 'personal', cat: 'servicios', sym: 'pin', color: 'blue', iva: '10' }, sugI != null ? FIJO_SUG[sugI] : {}, pre);
   const amb = f.amb || 'personal', cats = S.budget.filter(b => b.id !== 'cuotas');
   openSheet(`${head(id ? 'Editar gasto fijo' : 'Nuevo gasto fijo', `<button class="link b" data-act="saveFijo" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
     ${id ? '' : `<div class="chips" style="margin-bottom:14px">${FIJO_SUG.map((s, i) => `<button class="chip ${sugI === i ? 'on' : ''}" data-act="fijoSug" data-i="${i}" style="--c:var(--${s.color})"><span class="chip-ic">${sym(s.sym)}</span>${esc(s.name)}</button>`).join('')}</div>`}
@@ -1909,6 +1909,9 @@ function cobroItems() {
     if (!agui) items.push({ prio: 1, d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n + ' · vence ' + dLabel(c.d), a: c.a, act: 'payCuota', id: l.id, icon: 'bank', color: l.color });
   }));
   S.cards.forEach(c => { if (c.extracto > 0 && c.vence && c.vence < w.next) items.push({ prio: 1, d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Total del extracto · vence ' + dLabel(c.vence), a: c.extracto, act: 'payCard', id: c.id, icon: 'creditcard', color: 'indigo', card: true }); });
+  // Sobres fijos (alquiler…) que todavía no cargaste como gasto fijo: igual entran al plan
+  S.budget.filter(b => b.fijo && b.id !== 'cuotas' && b.amt > 0 && !S.fijos.some(f => f.amb !== 'negocio' && f.cat === b.id))
+    .forEach(b => items.push({ prio: 1, d: w.pay, t: b.name, s: 'Sobre fijo · tocá Pagar para cargarlo como gasto fijo', a: b.amt, act: 'sobre', id: b.id, icon: b.sym, color: b.color }));
   pendPayables().forEach(p => { if (p.venc && p.venc < w.next && !p.venta) items.push({ prio: 2, d: p.venc, t: p.prov, s: 'Proveedor · vence ' + dLabel(p.venc), a: payPend(p), act: 'payable', id: p.id, icon: 'box', color: 'indigo' }); });
   items.sort((a, b) => a.prio - b.prio || a.d.localeCompare(b.d));
   // Para vivir: los sobres variables del mes (los que no están cubiertos por un gasto fijo)
@@ -1928,7 +1931,7 @@ function cobroList(ingreso, useCofre) {
   const viv = sum(vivir, b => b.amt);
   if (viv) { left -= viv; html += `<div class="gh">Para vivir el mes</div><div class="group ic"><div class="cell cobro">${icoBox('cart', 'green')}<div class="tx"><div class="t"><span class="nb2">${++n}</span>Sobres del mes</div><div class="s">${vivir.map(b => esc(b.name.split(' ')[0]) + ' ' + gsK(b.amt)).join(' · ')}</div><div class="s ${left < 0 ? 'neg' : ''}">queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div><div class="v num">${gsK(viv)}</div></div></div>`; }
   html += left >= 0
-    ? `<div class="note mt"><b>Te sobran ${gs(left)}</b>: van al cofre para atacar a ${esc((attackOrder().list[0] || {}).name || 'la deuda')}. No los dejes sueltos en la cuenta.</div>`
+    ? `<div class="note mt"><b>Te sobran ${gs(left)}</b>: van al cofre para atacar ${cardDebt() > 0 ? 'la tarjeta (el resto de su saldo)' : 'a ' + esc((attackOrder().list.find(l => l.id !== S.settings.lumpTarget) || {}).name || 'la deuda')}. No los dejes sueltos en la cuenta.</div>`
     : `<div class="note mt" style="background:color-mix(in srgb,var(--red) 12%,transparent)"><b style="color:var(--red)">Faltan ${gs(-left)}.</b> ${useCofre ? 'Recortá sobres variables (comida afuera, pádel) o esperá las horas extra.' : 'Activá “Usar el cofre” o esperá las horas extra; si no, recortá sobres variables.'}</div>`;
   return html;
 }
@@ -2761,7 +2764,10 @@ const ACT = {
   saveFijo: d => saveFijo(d.id), delFijo: (d, el) => armed(el) && delFijo(d.id),
   fijoPay: d => fijoPaySheet(d.id), doFijoPay: d => doFijoPay(d.id),
   cobro: () => cobroSheet(),
-  cobroPay: d => { const f = { fijoPay: fijoPaySheet, payCuota: payCuotaSheet, payCard: payCardSheet, payable: payableSheet }[d.k]; if (f) { f(d.id); RETURN_TO = 'cobro'; } },
+  cobroPay: d => {
+    const sobre = id => { const b = S.budget.find(x => x.id === id); fijoForm(null, id === 'alquiler' ? 0 : undefined, { amt: b.amt, cat: b.id, name: id === 'alquiler' ? 'Alquiler' : b.name }); };
+    const f = { fijoPay: fijoPaySheet, payCuota: payCuotaSheet, payCard: payCardSheet, payable: payableSheet, sobre }[d.k]; if (f) { f(d.id); RETURN_TO = 'cobro'; }
+  },
   unlock: () => tryUnlock(), lockLogout: async () => { hideLock(); if (BK && BK.kind === 'cloud') await Store.logout(); },
   moveFund: d => moveSheet(d.from, d.to), doMove: () => doMove(),
   settings: () => settingsSheet(), saveSettings: () => saveSettings(), theme: d => setTheme(d.v),
@@ -2795,7 +2801,7 @@ document.addEventListener('click', e => {
   const fn = ACT[el.dataset.act], ret = RETURN_TO; if (!fn) return;
   fn(el.dataset, el, e);
   // Después de pagar algo desde el plan de cobro, volver al plan
-  if (ret === 'cobro' && ['doFijoPay', 'doPayCuota', 'doPayCard', 'doPayProv'].includes(el.dataset.act)) setTimeout(() => { if (!sheetOpen()) cobroSheet(); }, 450);
+  if (ret === 'cobro' && ['doFijoPay', 'doPayCuota', 'doPayCard', 'doPayProv', 'saveFijo'].includes(el.dataset.act)) setTimeout(() => { if (!sheetOpen()) cobroSheet(); }, 450);
 });
 document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (el && CHG[el.dataset.change]) CHG[el.dataset.change](el, e); });
 document.addEventListener('input', e => {
