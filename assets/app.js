@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.2.0';
+import * as Store from './store.js?v=2.3.0';
 
 /* =========================================================================
    Utilidades
@@ -152,7 +152,8 @@ function blankState() {
     baseCuotas: 0, cards: [], loans: [], budget: DEFAULT_BUDGET(), funds: { cofre: 0, iva: 0 }, goals: DEFAULT_GOALS(),
     tasks: {}, ach: {}, xp: 0, checkins: [], initialTotal: 0,
     payables: [], // deudas con proveedores (compras a crédito): { id, prov, desc, amt, iva, date, venc, venta, pagos: [{ id, d, amt, venta | mov }] }
-    hist: []      // foto diaria de la deuda: { d, m (préstamos + tarjetas), p (proveedores pendientes) }
+    hist: [],     // foto diaria de la deuda: { d, m (préstamos + tarjetas), p (proveedores pendientes) }
+    accounts: []  // dónde está la plata: { id, name, kind: banco|efectivo|billetera, color, ini, iniTs, iniD, conc }
   };
 }
 function normalize(raw) {
@@ -170,6 +171,7 @@ function normalize(raw) {
   s.tasks = s.tasks || {}; s.ach = s.ach || {}; s.checkins = s.checkins || []; s.xp = s.xp || 0;
   s.payables = (s.payables || []).map(p => Object.assign({ pagos: [] }, p));
   s.hist = s.hist || [];
+  s.accounts = s.accounts || [];
   return s;
 }
 // Copias de la versión 1 (archivo libre-de-deudas.html)
@@ -270,9 +272,9 @@ const ivaOf = (amt, iva) => iva === '10' ? Math.round(amt / 11) : iva === '5' ? 
 // Entidades (a quién le debés) y proveedores
 const entOf = x => String(x.entidad || '').trim();
 const debtName = l => entOf(l) ? entOf(l) + ' · ' + l.name : l.name;
-const BANKS = ['Banco Itaú', 'Banco Continental', 'Sudameris Bank', 'Banco Familiar', 'ueno bank', 'Banco GNB', 'Banco Basa', 'Banco Atlas', 'Interfisa Banco', 'Bancop', 'Banco Nacional de Fomento', 'Banco Río', 'Zeta Banco', 'Tu Financiera', 'Financiera FIC'];
+const BANKS = ['Banco Itaú', 'Banco Continental', 'Cooperativa Universitaria', 'Sudameris Bank', 'Banco Familiar', 'ueno bank', 'Banco GNB', 'Banco Basa', 'Banco Atlas', 'Interfisa Banco', 'Bancop', 'Banco Nacional de Fomento', 'Banco Río', 'Zeta Banco', 'Tu Financiera', 'Financiera FIC'];
 const uniq = a => [...new Set(a.filter(Boolean))];
-const entOptions = () => uniq(S.loans.concat(S.cards).map(entOf).concat(BANKS));
+const entOptions = () => uniq(S.loans.concat(S.cards).map(entOf).concat((S.accounts || []).map(a => a.name), BANKS));
 const dlist = (id, items) => `<datalist id="${id}">${items.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>`;
 const payable = id => S.payables.find(p => p.id === id);
 const payPaid = p => sum(p.pagos, x => x.amt);
@@ -280,6 +282,43 @@ const payPend = p => Math.max(0, p.amt - payPaid(p));
 const provDebt = (s = S) => sum(s.payables || [], payPend);
 const knownProvs = () => uniq(S.payables.map(p => p.prov));
 const pendPayables = () => S.payables.filter(p => payPend(p) > 0);
+
+// Cuentas (bancos, efectivo): el saldo sale del saldo inicial + los movimientos registrados después de cargarlo
+const acct = id => S.accounts.find(a => a.id === id);
+const acctName = id => id ? ((acct(id) || {}).name || 'cuenta eliminada') : '';
+const acctIcon = a => a.kind === 'efectivo' ? 'banknote' : a.kind === 'billetera' ? 'wallet' : 'bank';
+// Cada movimiento → [[cuenta, +entra / −sale, momento]]
+function acctFlows(m) {
+  const ts = m.ts || 0, out = [];
+  switch (m.t) {
+    case 'ingreso': if (m.cuenta) out.push([m.cuenta, m.amt, ts]); break;
+    case 'venta':
+      if (m.cobrada !== false) {
+        const t2 = m.cobTs || ts;
+        if (m.cuenta) out.push([m.cuenta, m.amt, t2]);
+        const cp = m.cuentaProv || m.cuenta;
+        if (m.provPaid && m.payable && cp) out.push([cp, -(m.payAmt || m.costo || 0), t2]);
+      }
+      break;
+    case 'gasto': if (m.medio !== 'tc' && m.cuenta) out.push([m.cuenta, -m.amt, ts]); break;
+    case 'cuota': case 'ataque': case 'precancel': case 'pagotc': case 'pagoiva': case 'pagoprov':
+      if (m.cuenta) out.push([m.cuenta, -m.amt, ts]); break;
+    case 'transf': out.push([m.from, -m.amt, ts], [m.to, m.amt, ts]); break;
+    case 'ajuste': out.push([m.cuenta, (m.dir || 1) * m.amt, ts]); break;
+  }
+  return out;
+}
+const acctBal = a => (a.ini || 0) + sum(M, m => sum(acctFlows(m).filter(f => f[0] === a.id && f[2] > (a.iniTs || 0)), f => f[1]));
+const acctDefault = () => { const l = lsGet('libre-acct'); return acct(l) ? l : (S.accounts[0] || {}).id || ''; };
+// Selector de cuenta para las hojas de pago (input oculto + chips)
+function acctPicker(id, label = 'Pagado desde', cur = acctDefault()) {
+  if (!S.accounts.length) return '';
+  return `<div class="gh">${label}</div><input type="hidden" id="${id}" value="${esc(cur)}"><div class="chips">${S.accounts.map(a =>
+    `<button class="chip ${a.id === cur ? 'on' : ''}" data-act="pick" data-target="${id}" data-v="${a.id}" style="--c:var(--${a.color})"><span class="chip-ic">${sym(acctIcon(a))}</span>${esc(a.name)}</button>`).join('')}<button class="chip ${cur ? '' : 'on'}" data-act="pick" data-target="${id}" data-v="" style="--c:var(--gray)"><span class="chip-ic">${sym('minus')}</span>Ninguna</button></div>`;
+}
+const pickedAcct = id => { const e = $('#' + id), v = e ? e.value : ''; if (v) lsSet('libre-acct', v); return v; };
+// Ventas que todavía no te pagaron (cuentas por cobrar)
+const receivables = () => M.filter(m => m.t === 'venta' && m.cobrada === false).sort(byDateDesc);
 
 // Foto diaria de la deuda para el gráfico "Cómo baja tu deuda"
 function snapDebt() {
@@ -353,11 +392,11 @@ const ganancia = m => m.ganancia ?? m.neto ?? m.amt;
 function bestMonthFact() { const by = {}; M.filter(m => m.t === 'venta').forEach(m => { const k = ym(m.date); by[k] = (by[k] || 0) + m.amt; }); return Math.max(0, ...Object.values(by)); }
 function monthSummary(k) {
   const ms = M.filter(m => ym(m.date) === k), f = t => ms.filter(t);
-  const ingresos = sum(f(m => m.t === 'ingreso' || m.t === 'venta'), m => m.amt);
+  const ingresos = sum(f(m => m.t === 'ingreso' || (m.t === 'venta' && m.cobrada !== false)), m => m.amt);
   const gPers = sum(f(m => m.t === 'gasto' && m.ambito !== 'negocio'), m => m.amt);
   // Negocio: gastos + costo pagado al proveedor con la venta + pagos directos a proveedores (los "con la venta" ya están en el costo)
   const gNeg = sum(f(m => m.t === 'gasto' && m.ambito === 'negocio'), m => m.amt)
-    + sum(f(m => m.t === 'venta' && (m.costoA || 'proveedor') === 'proveedor'), m => m.costo || 0)
+    + sum(f(m => m.t === 'venta' && m.cobrada !== false && (m.costoA || 'proveedor') === 'proveedor'), m => m.costo || 0)
     + sum(f(m => m.t === 'pagoprov' && m.src !== 'venta'), m => m.amt);
   const deudas = sum(f(m => ['cuota', 'ataque', 'precancel'].includes(m.t)), m => m.amt);
   const iva = sum(f(m => m.t === 'pagoiva'), m => m.amt);
@@ -472,6 +511,8 @@ function checkin() { const t = today(); if (!S.checkins.includes(t)) S.checkins.
    Efectos de cada movimiento (aplicar / revertir)
    ========================================================================= */
 function addTo(k, v) { if (!v) return; if (k === 'cofre' || k === 'iva') S.funds[k] += v; else { const g = goal(k); if (g) g.saved += v; } }
+// Reparto de una venta cobrada: ganancia → cofre y caja, costo recuperado → caja, IVA → sobre
+function ventaFunds(m, sign) { addTo('cofre', sign * (m.toCofre || 0)); addTo('emprender', sign * ((m.toEmp || 0) + (m.costoRet || 0))); addTo('iva', sign * (m.ivaRes || 0)); }
 // Match venta ↔ deuda con el proveedor: la venta queda vinculada y, si ya le pagaste, cancela la deuda
 function linkPay(m) {
   const p = m.payable && payable(m.payable); if (!p) return;
@@ -491,7 +532,7 @@ function applyMov(m) {
       if (m.ambito === 'negocio' && m.medio === 'caja') addTo('emprender', -m.amt);
       break;
     case 'ingreso': Object.entries(m.split || {}).forEach(([k, v]) => addTo(k, v)); if (m.tipo === 'aguinaldo') S.settings.lumpRecibido = true; break;
-    case 'venta': addTo('cofre', m.toCofre); addTo('emprender', (m.toEmp || 0) + (m.costoRet || 0)); addTo('iva', m.ivaRes); linkPay(m); break;
+    case 'venta': if (m.cobrada !== false) ventaFunds(m, 1); linkPay(m); break;
     case 'aporte': addTo(m.goal, m.amt); break;
     case 'retiro': addTo(m.goal, -m.amt); break;
     case 'mover': addTo(m.from, -m.amt); addTo(m.to, m.amt); break;
@@ -512,7 +553,7 @@ function revertMov(m) {
       if (m.ambito === 'negocio' && m.medio === 'caja') addTo('emprender', m.amt);
       break;
     case 'ingreso': Object.entries(m.split || {}).forEach(([k, v]) => addTo(k, -v)); if (m.tipo === 'aguinaldo') S.settings.lumpRecibido = false; break;
-    case 'venta': addTo('cofre', -m.toCofre); addTo('emprender', -((m.toEmp || 0) + (m.costoRet || 0))); addTo('iva', -(m.ivaRes || 0)); unlinkPay(m); break;
+    case 'venta': if (m.cobrada !== false) ventaFunds(m, -1); unlinkPay(m); break;
     case 'pagoprov': {
       const p = payable(m.payable); if (p) p.pagos = p.pagos.filter(x => x.id !== m.id);
       if (m.src === 'caja') addTo('emprender', m.amt);
@@ -657,6 +698,7 @@ function vHoy() {
     <button data-act="add" data-t="venta" style="--c:var(--indigo)"><span>${sym('bag')}</span>Venta</button>
     <button data-act="cero" style="--c:var(--teal)"><span>${sym('leaf')}</span>No gasté</button>
   </div>
+  ${acctSection()}
   ${tgt ? sh('Jefe actual', '<button class="link" data-act="tab" data-tab="batalla">Ver todos</button>') + bossCard(tgt, true)
     : (S.loans.length ? `<div class="card mt2 center"><span class="ico xl" style="--c:var(--yellow);margin:0 auto">${sym('crown')}</span><h3 class="mt">No quedan préstamos</h3><small>Los viajes están desbloqueados en Plan.</small></div>` : '')}
   ${hasDebt ? sh('Próximos vencimientos') + `<div class="group ic">${upcoming() || '<div class="cell"><small>Nada pendiente.</small></div>'}</div>` : ''}
@@ -715,6 +757,8 @@ function movMeta(m) {
     case 'pagotc': return { icon: 'creditcard', color: 'indigo', title: 'Pago de ' + ((card(m.card) || {}).name || 'tarjeta'), sign: -1 };
     case 'pagoiva': return { icon: 'receipt', color: 'gray', title: 'Pago de IVA' + (m.periodo ? ' · ' + ymLabel(m.periodo) : ''), sign: -1 };
     case 'pagoprov': return { icon: 'box', color: 'indigo', title: 'Pago a ' + (m.prov || 'proveedor'), sign: -1 };
+    case 'transf': return { icon: 'arrows', color: 'blue', title: acctName(m.from) + ' → ' + acctName(m.to), sign: 0 };
+    case 'ajuste': return { icon: 'check', color: 'gray', title: 'Ajuste · ' + acctName(m.cuenta), sign: m.dir || 1 };
     case 'mover': return { icon: 'arrows', color: 'gray', title: fundName(m.from) + ' → ' + fundName(m.to), sign: 0 };
     case 'aporte': { const g = goal(m.goal) || {}; return { icon: g.sym || 'star', color: g.color || 'gray', title: 'Aporte a ' + (g.name || 'meta'), sign: 0 }; }
     case 'retiro': { const g = goal(m.goal) || {}; return { icon: 'arrowUp', color: 'gray', title: 'Retiro de ' + (g.name || 'meta'), sign: 0 }; }
@@ -728,6 +772,8 @@ function movRow(m) {
   if (m.ivaAmt) tags.push(`<span class="pill">IVA ${m.iva}%</span>`);
   if (m.t === 'venta' && m.costo) tags.push(`<span class="pill" style="--c:var(--green)">ganancia ${gsK(m.ganancia)}</span>`);
   if (m.t === 'venta' && m.prov) tags.push(`<span class="pill" style="--c:var(--indigo)">${esc(m.prov)}</span>`);
+  if (m.t === 'venta' && m.cobrada === false) tags.push(`<span class="pill" style="--c:var(--orange)">por cobrar</span>`);
+  if (m.cuenta && m.t !== 'ajuste' && acctFlows(m).length) tags.push(`<span class="pill" style="--c:var(--${(acct(m.cuenta) || {}).color || 'gray'})">${esc(acctName(m.cuenta))}</span>`);
   const showNote = m.note && !['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t);
   const sub = showNote ? esc(m.note) : m.t === 'gasto' ? (MEDIO_L[m.medio] || '') : '';
   const amt = m.t === 'cero' ? '' : (mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt);
@@ -1017,7 +1063,7 @@ function provSection() {
 function vNegocio() {
   const k = ym(today()), st = S.settings, mes = MESES_L[+k.slice(5) - 1];
   const ventas = inMonth(k, ['venta']);
-  const fact = sum(ventas, m => m.amt), gan = sum(ventas, ganancia), cofre = sum(ventas, m => m.toCofre);
+  const fact = sum(ventas, m => m.amt), gan = sum(ventas, ganancia), cofre = sum(ventas.filter(m => m.cobrada !== false), m => m.toCofre);
   const meta = st.metaFacturacion || 1, pc = fact / meta * 100;
   const iva = ivaMonth(k), best = Math.max(bestMonthFact(), fact), caja = goal('emprender');
   const last = M.filter(m => m.t === 'venta' || m.t === 'pagoprov' || (m.t === 'gasto' && m.ambito === 'negocio')).sort(byDateDesc).slice(0, 8);
@@ -1040,6 +1086,7 @@ function vNegocio() {
     ${tile({ k: 'Caja del negocio', icon: 'briefcase', color: 'indigo', value: fmt(caja.saved), vcolor: caja.saved < 0 ? 'var(--red)' : '', foot: 'capital para comprar', act: 'goal', id: 'emprender' })}
     ${tile({ k: 'Sobre IVA', icon: 'receipt', color: 'gray', value: fmt(S.funds.iva), foot: 'no es tuyo: es del fisco' })}
   </div>
+  ${cobrosSection()}
   ${provSection()}
   ${sh('IVA de ' + mes)}
   <div class="group">
@@ -1181,16 +1228,17 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.2.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.3.0</p>`;
 }
 
 /* =========================================================================
    Hoja: registrar movimiento
    ========================================================================= */
-let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'proveedor', pay: 'new', provPaid: 'si', tipo: 'extra', touched: false, pct: null, d: {} };
+let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'proveedor', pay: 'new', provPaid: 'si', cob: 'si', cuenta: '', cuentaProv: '', tipo: 'extra', touched: false, pct: null, d: {} };
 function openAdd(t, o = {}) {
   if (t) REG.t = t;
   REG.touched = false; REG.pct = null; REG.d = { date: today() }; REG.pay = 'new'; REG.provPaid = 'si';
+  REG.cob = 'si'; REG.cuenta = acctDefault(); REG.cuentaProv = '';
   if (!S.cards.find(c => c.id === REG.card)) REG.card = S.cards[0] ? S.cards[0].id : '';
   if (!S.budget.find(b => b.id === REG.cat && b.id !== 'cuotas')) REG.cat = (S.budget.find(b => b.id !== 'cuotas') || {}).id;
   const p = o.pay && payable(o.pay);
@@ -1206,6 +1254,8 @@ function saveDraft() {
 }
 function rerenderAdd() { saveDraft(); const sc = $('#sheet').scrollTop; $('#sheet').innerHTML = '<div class="grab"></div>' + addHtml(); $('#sheet').scrollTop = sc; mountAdd(false); }
 const regChip = (k, v, label, icon, color, on) => `<button class="chip ${on ? 'on' : ''}" data-act="reg" data-k="${k}" data-v="${v}" style="--c:var(--${color})"><span class="chip-ic">${sym(icon)}</span>${esc(label)}</button>`;
+// Chips de cuenta dentro del formulario de registro
+const regAcct = (k, label, cur) => S.accounts.length ? `<div class="gh">${label}</div><div class="chips">${S.accounts.map(a => regChip(k, a.id, a.name, acctIcon(a), a.color, cur === a.id)).join('')}${regChip(k, '', 'Ninguna', 'minus', 'gray', !cur)}</div>` : '';
 function addHtml() {
   const t = REG.t, d = REG.d;
   let body = '';
@@ -1218,7 +1268,7 @@ function addHtml() {
     <div class="gh">Pagado con</div>
     <div class="seg">${segBtns('reg', 'medio', neg ? [['caja', 'Caja negocio'], ['tc', 'Tarjeta'], ['debito', 'Personal']] : [['debito', 'Débito'], ['efectivo', 'Efectivo'], ['tc', 'Tarjeta']], REG.medio)}</div>
     ${REG.medio === 'tc' ? (S.cards.length > 1 ? `<div class="chips mt">${S.cards.map(c => regChip('card', c.id, c.name, 'creditcard', 'indigo', REG.card === c.id)).join('')}</div>` : '')
-      + `<p class="gf">${S.cards.length ? 'Con tarjeta, el jefe Tarjeta recupera vida. Solo si vas a pagar el total del extracto.' : 'No tenés tarjetas cargadas: agregala en Batalla.'}</p>` : ''}
+      + `<p class="gf">${S.cards.length ? 'Con tarjeta, el jefe Tarjeta recupera vida. Solo si vas a pagar el total del extracto.' : 'No tenés tarjetas cargadas: agregala en Batalla.'}</p>` : regAcct('cuenta', 'Sale de la cuenta', REG.cuenta)}
     <div class="gh">IVA incluido</div>
     <div class="seg">${segBtns('reg', 'iva', [['none', 'Sin dato'], ['10', '10%'], ['5', '5%'], ['ex', 'Exento']], REG.iva)}</div>
     <p class="gf">${neg ? 'Con factura a tu RUC, este IVA es <b>crédito fiscal</b>: se descuenta del IVA de tus ventas.' : 'Informativo: cuánto IVA pagás como consumidor.'}</p>`;
@@ -1235,6 +1285,7 @@ function addHtml() {
     <div class="gh">Tipo</div>
     <div class="chips">${[['sueldo', 'Sueldo', 'bank'], ['extra', 'Horas extra', 'clock'], ['aguinaldo', 'Aguinaldo', 'gift'], ['otro', 'Otro', 'sparkles']].map(([v, l, ic]) => regChip('tipo', v, l, ic, 'green', REG.tipo === v)).join('')}</div>
     <p class="note mt">${why}</p>
+    ${regAcct('cuenta', 'Entró en', REG.cuenta)}
     <div class="gh">Repartir</div>
     <div class="group">${rows.map(([k, l]) => field(l, `<input id="sp_${k}" data-money data-split inputmode="numeric" placeholder="0" value="${esc(d['sp_' + k] || '')}">`)).join('')}</div>
     <p class="gf" id="splitInfo">Lo que no repartas queda para vivir.</p>`;
@@ -1242,6 +1293,9 @@ function addHtml() {
     const pct = REG.pct ?? S.settings.pctVenta;
     body = `
     <div class="group mt">${field('Cliente', `<input id="fCli" placeholder="Opcional" value="${esc(d.cli || '')}">`)}</div>
+    <div class="gh">¿Ya te pagaron?</div>
+    <div class="seg">${segBtns('reg', 'cob', [['si', 'Sí, cobrado'], ['no', 'Todavía me deben']], REG.cob)}</div>
+    ${REG.cob === 'si' ? regAcct('cuenta', 'Cobrado en', REG.cuenta) : '<p class="gf">Queda en <b>Te deben</b>. El reparto al cofre, la caja y el IVA se hace cuando marcás que te pagaron.</p>'}
     <div class="gh">IVA de la venta</div>
     <div class="seg">${segBtns('reg', 'ivaV', [['10', '10%'], ['5', '5%'], ['ex', 'Exento']], REG.ivaV)}</div>
     <div class="gh">Lo que te costó (la compra)</div>
@@ -1277,8 +1331,10 @@ function provBlock() {
     ${pend.length ? `<div class="chips">${pend.map(p => regChip('pay', p.id, p.prov + ' · ' + gsK(payPend(p)), 'box', 'indigo', REG.pay === p.id)).join('')}${regChip('pay', 'new', 'Otro', 'plus', 'gray', !sel)}</div>` : ''}
     ${sel ? `<p class="gf">${esc(sel.desc || 'Compra')} del ${dLabel(sel.date)} · le debés ${gs(payPend(sel))}. Con esta venta se hace el match.</p>`
       : `<div class="group${pend.length ? ' mt' : ''}">${field('Proveedor', `<input id="fProv" list="dlProv" placeholder="Ej: Distribuidora S.A" autocomplete="off" value="${esc(d.prov || '')}">`)}</div>${dlist('dlProv', knownProvs())}`}
+    ${REG.cob === 'no' ? '<p class="gf">Cuando te paguen, le pagás al proveedor y se hace el match.</p>' : `
     <div class="seg mt">${segBtns('reg', 'provPaid', [['si', 'Ya le pagué'], ['no', 'Le pago después']], REG.provPaid)}</div>
-    <p class="gf">${REG.provPaid === 'si' ? 'La deuda con el proveedor queda cancelada con esta venta.' : 'La deuda queda pendiente y vinculada a esta venta. Cuando le pagues, marcala en Negocio → Proveedores.'}</p>`;
+    <p class="gf">${REG.provPaid === 'si' ? 'La deuda con el proveedor queda cancelada con esta venta.' : 'La deuda queda pendiente y vinculada a esta venta. Cuando le pagues, marcala en Negocio → Proveedores.'}</p>
+    ${REG.provPaid === 'si' && S.accounts.length > 1 ? regAcct('cuentaProv', 'Le pagaste desde', REG.cuentaProv || REG.cuenta) : ''}`}`;
 }
 function mountAdd(focus = true) {
   addLive();
@@ -1337,6 +1393,7 @@ function saveAdd() {
     m.ambito = REG.amb; m.medio = REG.medio; m.cat = REG.amb === 'negocio' ? 'negocio' : REG.cat;
     if (m.medio === 'tc') { if (!S.cards.length) { toast('Primero agregá tu tarjeta en Batalla'); return; } m.card = REG.card || S.cards[0].id; }
     m.iva = REG.iva; m.ivaAmt = ivaOf(amt, REG.iva);
+    if (m.medio !== 'tc' && REG.cuenta && acct(REG.cuenta)) { m.cuenta = REG.cuenta; lsSet('libre-acct', REG.cuenta); }
     applyMov(m); addXP(5);
     if (m.ambito === 'personal') {
       const b = S.budget.find(x => x.id === m.cat), spent = monthSpent(m.cat, ym(date)) + amt;
@@ -1346,6 +1403,7 @@ function saveAdd() {
     m.tipo = REG.tipo; const split = {}; let tot = 0;
     $$('#sheet [data-split]').forEach(i => { const v = parseN(i.value); if (v) { split[i.id.slice(3)] = v; tot += v; } });
     if (tot > amt) { toast('El reparto supera el monto'); return; }
+    if (REG.cuenta && acct(REG.cuenta)) { m.cuenta = REG.cuenta; lsSet('libre-acct', REG.cuenta); }
     m.split = split; applyMov(m); addXP(10 + Math.floor((split.cofre || 0) / 100000));
     msg = 'Ingreso guardado' + (split.cofre ? ' · +' + gsK(split.cofre) + ' al cofre' : '');
   } else {
@@ -1362,10 +1420,19 @@ function saveAdd() {
         const name = (($('#fProv') || {}).value || '').trim();
         if (name) { pv = { id: uid(), prov: name, desc: note || m.cliente || 'Compra', amt: costo, iva: m.ivaC, date, venc: '', venta: null, pagos: [] }; S.payables.push(pv); isNew = true; }
       }
-      if (pv) Object.assign(m, { payable: pv.id, prov: pv.prov, payNew: isNew, provPaid: REG.provPaid === 'si', payAmt: isNew ? costo : Math.min(costo, payPend(pv)) });
+      if (pv) Object.assign(m, { payable: pv.id, prov: pv.prov, payNew: isNew, provPaid: REG.cob === 'si' && REG.provPaid === 'si', payAmt: isNew ? costo : Math.min(costo, payPend(pv)) });
+    }
+    // Cobro: en qué cuenta entró la plata (o queda en "Te deben")
+    m.cobrada = REG.cob === 'si';
+    if (m.cobrada) {
+      m.cobD = date; m.cobTs = m.ts;
+      if (REG.cuenta && acct(REG.cuenta)) { m.cuenta = REG.cuenta; lsSet('libre-acct', REG.cuenta); }
+      if (m.provPaid && REG.cuentaProv && REG.cuentaProv !== REG.cuenta && acct(REG.cuentaProv)) m.cuentaProv = REG.cuentaProv;
     }
     S.settings.pctVenta = p; applyMov(m); addXP(30); confetti();
-    msg = '¡Venta! Ganancia ' + gsK(v.gan) + ' · +' + gsK(v.cofre) + ' al cofre' + (m.payable ? (m.provPaid ? ' · ' + m.prov + ' pagado' : ' · ' + m.prov + ' pendiente') : '');
+    msg = m.cobrada
+      ? '¡Venta! Ganancia ' + gsK(v.gan) + ' · +' + gsK(v.cofre) + ' al cofre' + (m.payable ? (m.provPaid ? ' · ' + m.prov + ' pagado' : ' · ' + m.prov + ' pendiente') : '')
+      : 'Venta registrada · te deben ' + gs(amt);
   }
   M.push(m); checkin(); toast(msg); haptic(12); checkAch();
   commit({ add: [m] }); closeSheet(); render();
@@ -1392,6 +1459,18 @@ function movDetail(id) {
     if (pv) rows.push(['Proveedor', `<button class="link" data-act="payable" data-id="${pv.id}">${esc(pv.prov)} · ${payPend(pv) > 0 ? 'pendiente' : 'pagado'}</button>`]);
   }
   if (m.t === 'pagoprov') rows.push(['Sale de', { venta: 'Una venta (ya separado)', caja: 'Caja del negocio', personal: 'Tu bolsillo' }[m.src] || '—']);
+  // Dónde entró o de dónde salió la plata (tocá para cambiar la cuenta)
+  const acctBtn = (f, label, val) => rows.push([label, `<button class="link" data-act="movAcct" data-id="${m.id}" data-f="${f}">${val ? esc(acctName(val)) : 'Elegir cuenta'}</button>`]);
+  if (m.t === 'venta') {
+    if (m.cobrada === false) rows.push(['Cobro', '<span style="color:var(--orange);font-weight:600">Pendiente · te deben</span>']);
+    else {
+      rows.push(['Cobro', 'Cobrado el ' + dLabel(m.cobD || m.date)]);
+      if (S.accounts.length) { acctBtn('cuenta', 'Cobrado en', m.cuenta); if (m.provPaid && m.payable) acctBtn('cuentaProv', 'Pago al proveedor desde', m.cuentaProv || m.cuenta); }
+    }
+  } else if (S.accounts.length && (['ingreso', 'cuota', 'ataque', 'precancel', 'pagotc', 'pagoiva', 'pagoprov'].includes(m.t) || (m.t === 'gasto' && m.medio !== 'tc')))
+    acctBtn('cuenta', m.t === 'ingreso' ? 'Entró en' : 'Pagado desde', m.cuenta);
+  if (m.t === 'transf') rows.push(['Desde', esc(acctName(m.from))], ['Hacia', esc(acctName(m.to))]);
+  if (m.t === 'ajuste') rows.push(['Cuenta', esc(acctName(m.cuenta))]);
   if (m.t === 'precancel' && m.ahorro) rows.push(['Ahorro en intereses', gs(m.ahorro)]);
   if (m.note) rows.push(['Nota', esc(m.note)]);
   openSheet(`${head('Detalle')}
@@ -1401,6 +1480,8 @@ function movDetail(id) {
     <div class="group">${rows.map(r => `<div class="cell"><div class="tx s2">${r[0]}</div><div class="v">${r[1]}</div></div>`).join('')}</div>
     ${m.t === 'venta' && m.costo && (m.costoA || 'proveedor') === 'proveedor' && !(m.payable && payable(m.payable))
       ? `<button class="btn p w mt2" style="--c:var(--indigo)" data-act="assignProv" data-id="${m.id}">${sym('box')}Asignar proveedor y hacer el match</button>` : ''}
+    ${m.t === 'venta' && m.cobrada === false ? `<button class="btn p w mt2" style="--c:var(--green)" data-act="cobrar" data-id="${m.id}">${sym('check')}Ya me pagaron</button>` : ''}
+    ${m.t === 'venta' && m.cobrada !== false ? `<button class="btn w mt2" style="--c:var(--orange)" data-act="undoCobro" data-id="${m.id}">Marcar como no cobrada</button>` : ''}
     <button class="btn w mt2" style="--c:var(--red)" data-act="delMov" data-id="${m.id}">Eliminar movimiento</button>
     <p class="gf center">Se revierte su efecto en cofre, metas, tarjeta y cronograma.</p>`);
 }
@@ -1418,13 +1499,14 @@ function payCuotaSheet(id) {
   const l = loan(id), c = nextCuota(l); if (!c) return;
   openSheet(`${head('Pagar cuota')}${bossHead(l, 'Cuota ' + c.n + ' · vence ' + dLabel(c.d))}
     <div class="group">${field('Monto pagado', money('sAmt', c.a))}</div>
+    ${acctPicker('sCta')}
     <button class="btn p w mt2" style="--c:var(--green)" data-act="doPayCuota" data-id="${l.id}">Confirmar pago</button>`);
 }
 function doPayCuota(id) {
   const l = loan(id), c = nextCuota(l); if (!c) return;
   const amt = parseN($('#sAmt').value) || c.a;
   c.paid = true; c.pd = today(); SIM = null;
-  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'cuota', loan: l.id, n: c.n, note: l.name + ' · cuota ' + c.n };
+  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'cuota', loan: l.id, n: c.n, note: l.name + ' · cuota ' + c.n, cuenta: pickedAcct('sCta') };
   M.push(m); addXP(20); checkin(); haptic(15);
   if (loanSaldo(l) <= 0) { toast(l.name + ' derrotado'); confetti(); } else toast('−' + gs(amt) + ' de vida a ' + l.name);
   checkAch(); commit({ add: [m] }); closeSheet(); render();
@@ -1435,6 +1517,7 @@ function attackSheet(id) {
     <p class="note">Usalo cuando el banco te acepte un <b>pago anticipado</b> (adelanto de cuotas o amortización extraordinaria). Se descuenta desde la <b>última cuota</b> hacia atrás: así terminás antes.</p>
     <div class="group mt"><div class="cell">${icoBox('coins', 'orange')}<div class="tx">En el cofre</div><div class="v num" style="color:var(--orange)">${gs(S.funds.cofre)}</div></div>
       ${field('Monto del ataque', money('sAmt', Math.max(0, Math.min(S.funds.cofre, s))))}</div>
+    ${acctPicker('sCta')}
     <button class="btn p w mt2" style="--c:var(--orange)" data-act="doAttack" data-id="${l.id}">Atacar</button>`);
 }
 const snapshot = l => l.cuotas.map(c => Object.assign({}, c));
@@ -1448,7 +1531,7 @@ function doAttack(id) {
     if (c.a <= rem) { rem -= c.a; c.a = 0; c.paid = true; c.pd = today(); c.adel = true; } else { c.a -= rem; rem = 0; }
   }
   const fromCofre = Math.max(0, Math.min(S.funds.cofre, amt)); S.funds.cofre -= fromCofre; SIM = null;
-  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'ataque', loan: l.id, note: l.name, undo: diffUndo(before, l), fromCofre };
+  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'ataque', loan: l.id, note: l.name, undo: diffUndo(before, l), fromCofre, cuenta: pickedAcct('sCta') };
   M.push(m); addXP(20 + Math.floor(amt / 100000)); checkin(); haptic(25); confetti();
   toast(loanSaldo(l) <= 0 ? l.name + ' derrotado' : 'Golpe de ' + gs(amt));
   checkAch(); commit({ add: [m] }); closeSheet(); render();
@@ -1458,6 +1541,7 @@ function precancelSheet(id) {
   openSheet(`${head('Precancelar')}${bossHead(l, 'Suma de cuotas: ' + gs(s))}
     <p class="note">Pedí al banco el <b>saldo de precancelación</b>: suele ser menor que la suma de cuotas porque descuentan los intereses futuros. Ese descuento es tu premio.</p>
     <div class="group mt">${field('Monto real pagado', money('sAmt', '', fmt(s)))}</div>
+    ${acctPicker('sCta')}
     <button class="btn p w mt2" style="--c:var(--orange)" data-act="doPrecancel" data-id="${l.id}">Precancelar</button>`);
 }
 function doPrecancel(id) {
@@ -1468,7 +1552,7 @@ function doPrecancel(id) {
   const ahorro = Math.max(0, s - paid);
   l.precancel = { fecha: today(), pagado: paid, ahorro };
   const fromCofre = Math.max(0, Math.min(S.funds.cofre, paid)); S.funds.cofre -= fromCofre; SIM = null;
-  const m = { id: uid(), ts: Date.now(), date: today(), amt: paid, t: 'precancel', loan: l.id, note: l.name, ahorro, undo: diffUndo(before, l), fromCofre };
+  const m = { id: uid(), ts: Date.now(), date: today(), amt: paid, t: 'precancel', loan: l.id, note: l.name, ahorro, undo: diffUndo(before, l), fromCofre, cuenta: pickedAcct('sCta') };
   M.push(m); addXP(100); checkin(); haptic(40); confetti(); setTimeout(confetti, 600);
   toast('Golpe crítico: te ahorraste ' + gs(ahorro)); unlock('critico');
   checkAch(); commit({ add: [m] }); closeSheet(); render();
@@ -1585,11 +1669,12 @@ function payCardSheet(id) {
   openSheet(`${head('Pagar tarjeta')}
     <div class="g2">${tile({ k: 'Extracto (total)', icon: 'creditcard', color: 'indigo', value: fmt(c.extracto) })}${tile({ k: 'Mínimo', icon: 'minus', color: 'red', value: fmt(c.minimo) })}</div>
     <div class="group mt">${field('Monto pagado', money('sAmt', c.extracto || c.saldo))}</div>
+    ${acctPicker('sCta')}
     <button class="btn p w mt2" data-act="doPayCard" data-id="${c.id}">Confirmar pago</button>`);
 }
 function doPayCard(id) {
   const c = card(id), amt = parseN($('#sAmt').value); if (!amt) return toast('Ingresá un monto');
-  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'pagotc', card: c.id, note: c.name, prevSaldo: c.saldo, prevExtracto: c.extracto };
+  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'pagotc', card: c.id, note: c.name, prevSaldo: c.saldo, prevExtracto: c.extracto, cuenta: pickedAcct('sCta') };
   c.saldo = Math.max(0, c.saldo - amt); SIM = null;
   const full = amt >= c.extracto; M.push(m); addXP(full ? 40 : 10); checkin();
   if (full) { c.extracto = 0; unlock('tc'); toast('Extracto pagado completo'); } else toast('Pagaste menos que el total: habrá intereses sobre ' + gs(c.extracto - amt));
@@ -1703,11 +1788,12 @@ function payProvSheet(id) {
     <div class="gh">¿De dónde sale la plata?</div>
     <input type="hidden" id="ppS" value="${src}">
     <div class="seg">${[['venta', 'De una venta'], ['caja', 'Caja del negocio'], ['personal', 'Mi bolsillo']].map(([v, l]) => `<button class="${v === src ? 'on' : ''}" data-act="pick" data-target="ppS" data-v="${v}">${l}</button>`).join('')}</div>
-    <p class="gf"><b>De una venta:</b> la plata ya la separaste al cobrar (no toca ningún fondo). <b>Caja del negocio:</b> se descuenta de la caja. <b>Mi bolsillo:</b> sale de tu plata personal.</p>`);
+    <p class="gf"><b>De una venta:</b> la plata ya la separaste al cobrar (no toca ningún fondo). <b>Caja del negocio:</b> se descuenta de la caja. <b>Mi bolsillo:</b> sale de tu plata personal.</p>
+    ${acctPicker('ppCta', 'Le pagaste desde la cuenta')}`);
 }
 function doPayProv(id) {
   const p = payable(id), amt = Math.min(parseN($('#ppA').value), payPend(p)); if (!amt) return toast('Ingresá un monto');
-  const m = { id: uid(), ts: Date.now(), date: $('#ppD').value || today(), amt, t: 'pagoprov', payable: p.id, prov: p.prov, src: $('#ppS').value, note: p.desc || '' };
+  const m = { id: uid(), ts: Date.now(), date: $('#ppD').value || today(), amt, t: 'pagoprov', payable: p.id, prov: p.prov, src: $('#ppS').value, note: p.desc || '', cuenta: pickedAcct('ppCta') };
   applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] });
   toast(payPend(p) <= 0 ? 'Deuda con ' + p.prov + ' cancelada' : 'Pago registrado · quedan ' + gs(payPend(p)));
   payableSheet(id); render();
@@ -1752,6 +1838,169 @@ function doAssignProv(id) {
   linkPay(m); addXP(10); checkin(); commit({ add: [m] });
   toast(m.provPaid ? 'Match hecho: deuda con ' + p.prov + ' cancelada' : 'Deuda con ' + p.prov + ' pendiente, vinculada a la venta');
   payableSheet(p.id); render();
+}
+
+/* =========================================================================
+   Hojas: cuentas (dónde está la plata), conciliación y cobros
+   ========================================================================= */
+function acctRow(a) {
+  const unset = a.ini == null;
+  return `<button class="cell" data-act="acct" data-id="${a.id}">${icoBox(acctIcon(a), a.color)}<div class="tx"><div class="t">${esc(a.name)}</div>
+    <div class="s">${unset ? 'Tocá para cargar el saldo' : a.conc === today() ? 'Conciliado hoy' : a.conc ? 'Conciliado el ' + dLabel(a.conc) : 'Sin conciliar'}</div></div>
+    <div class="v">${unset ? '<span class="pill" style="--c:var(--blue)">Cargar saldo</span>' : `<span class="num">${fmt(acctBal(a))}</span>`}</div>${CHEV}</button>`;
+}
+function acctSection() {
+  const r = receivables(), pd = provDebt(), owed = sum(r, m => m.amt);
+  if (!S.accounts.length) return sh('Tus cuentas') + `<div class="group ic">${cellLink('newAcct', 'bank', 'blue', 'Agregá tus cuentas', 'Bancos y efectivo: dónde está tu plata')}</div>`;
+  const set = S.accounts.filter(a => a.ini != null), tot = sum(set, acctBal);
+  return sh('Tus cuentas', '<button class="link" data-act="newAcct">Agregar</button>') +
+    `<div class="group ic">${S.accounts.map(acctRow).join('')}
+      <div class="cell"><div class="tx"><div class="t" style="font-weight:600">Total en cuentas</div>${set.length < S.accounts.length ? `<div class="s">Falta cargar el saldo de ${S.accounts.length - set.length}</div>` : ''}</div><div class="v num" style="font-weight:700">${gs(tot)}</div></div></div>
+    ${owed || pd ? `<div class="g2 mt">
+      ${tile({ k: 'Te deben', icon: 'clock', color: 'orange', value: fmt(owed), foot: r.length ? r.length + (r.length === 1 ? ' venta por cobrar' : ' ventas por cobrar') : 'nada pendiente', act: 'tab', id: '' }).replace('data-act="tab" data-id=""', 'data-act="tab" data-tab="negocio"')}
+      ${tile({ k: 'Debés a proveedores', icon: 'box', color: 'indigo', value: fmt(pd), foot: pd ? 'se paga con tus ventas' : 'al día', act: 'tab', id: '' }).replace('data-act="tab" data-id=""', 'data-act="tab" data-tab="negocio"')}
+    </div>` : ''}
+    <p class="gf">Las cuentas dicen <b>dónde está</b> tu plata. El cofre, la caja y el sobre IVA dicen <b>para qué es</b>.</p>`;
+}
+function acctSheet(id) {
+  const a = acct(id); if (!a) return closeSheet();
+  if (a.ini == null) return concSheet(id);
+  // Una línea por cada entrada o salida (una venta puede tener el cobro y el pago al proveedor)
+  const rows = [];
+  M.forEach(m => acctFlows(m).forEach(f => { if (f[0] === id) rows.push({ m, d: f[1], ts: f[2], dt: m.t === 'venta' ? m.cobD || m.date : m.date }); }));
+  rows.sort((p, q) => q.dt.localeCompare(p.dt) || q.ts - p.ts || p.d - q.d);
+  const after = rows.filter(r => r.ts > (a.iniTs || 0)), before = rows.filter(r => r.ts <= (a.iniTs || 0));
+  const row = r => {
+    const mm = movMeta(r.m), provOut = r.m.t === 'venta' && r.d < 0;
+    const title = provOut ? 'Pago a ' + (r.m.prov || 'proveedor') : r.m.t === 'venta' ? 'Cobro' + (r.m.cliente ? ' · ' + r.m.cliente : ' de venta') : mm.title;
+    const sub = provOut ? 'match con la venta' + (r.m.cliente ? ' a ' + esc(r.m.cliente) : '') : r.m.t === 'venta' ? 'venta del ' + dLabel(r.m.date) : esc(r.m.note || '');
+    return `<button class="cell" data-act="movDetail" data-id="${r.m.id}">${icoBox(provOut ? 'box' : mm.icon, provOut ? 'indigo' : mm.color)}<div class="tx"><div class="t">${esc(title)}</div><div class="s">${dLabel(r.dt)}${sub ? ' · ' + sub : ''}</div></div>
+      <div class="v num ${r.d > 0 ? 'pos' : ''}">${r.d > 0 ? '+' : '−'}${fmt(Math.abs(r.d))}</div></button>`;
+  };
+  openSheet(`${head(esc(a.name), `<button class="link" data-act="editAcct" data-id="${id}">Editar</button>`)}
+    <div class="center" style="padding:4px 0 14px">${icoBox(acctIcon(a), a.color, 'xl')}${big(fmt(acctBal(a)) + '<span class="u">Gs</span>')}<small>${a.conc ? 'conciliado con el banco el ' + dLabel(a.conc) : 'saldo según la app'}</small></div>
+    <div class="btns"><button class="btn p" data-act="conc" data-id="${id}">${sym('check')}Conciliar</button><button class="btn" data-act="transf" data-id="${id}">${sym('arrows')}Transferir</button></div>
+    <div class="gh">Entradas y salidas</div>
+    <div class="group ic">${after.map(row).join('')}
+      <div class="cell">${icoBox('calendar', 'gray')}<div class="tx"><div class="t">Saldo inicial</div><div class="s">Cargado el ${dLabel(a.iniD)}</div></div><div class="v num">${fmt(a.ini)}</div></div></div>
+    ${before.length ? `<div class="gh">Antes del saldo inicial (ya incluidos)</div><div class="group ic">${before.map(row).join('')}</div>` : ''}
+    <p class="gf">Cada movimiento dice de dónde salió o a dónde entró la plata. <b>Conciliar</b> compara la app con el saldo real que te muestra el banco.</p>`);
+}
+function concSheet(id) {
+  const a = acct(id), first = a.ini == null;
+  openSheet(`${head(first ? 'Saldo de ' + esc(a.name) : 'Conciliar ' + esc(a.name), `<button class="link b" data-act="doConc" data-id="${id}">Guardar</button>`, first ? '<button class="link" data-act="close">Cerrar</button>' : `<button class="link" data-act="acct" data-id="${id}">Atrás</button>`)}
+    ${first ? '<p class="gf" style="margin:0 4px 12px">Copiá el saldo disponible que te muestra hoy la app del banco. Desde ahí, cada cobro y pago que registres con esta cuenta lo mueve.</p>'
+      : `<div class="group"><div class="cell"><div class="tx">Saldo en la app</div><div class="v num">${gs(acctBal(a))}</div></div></div>`}
+    <div class="group mt">${field(first ? 'Saldo actual' : 'Saldo real en el banco', money('cnA', '', '0'))}</div>
+    <p class="gf">${first ? 'Si está en cero, dejalo vacío.' : 'Si no coincide, fijate primero si te falta registrar algún gasto, cobro o transferencia. Si igual hay diferencia, se registra un ajuste y la app queda igual al banco.'}</p>
+    <button class="btn p w mt2" data-act="doConc" data-id="${id}">${first ? 'Guardar saldo' : 'Conciliar'}</button>`);
+}
+function doConc(id) {
+  const a = acct(id), v = parseN($('#cnA').value);
+  if (a.ini == null) {
+    Object.assign(a, { ini: v, iniTs: Date.now(), iniD: today(), conc: today() });
+    commit(); render(); acctSheet(id); return toast('Saldo de ' + a.name + ' cargado');
+  }
+  const diff = v - acctBal(a); a.conc = today();
+  if (!diff) { commit(); render(); acctSheet(id); haptic(15); return toast(a.name + ': coincide con el banco'); }
+  const m = { id: uid(), ts: Date.now(), date: today(), amt: Math.abs(diff), dir: diff > 0 ? 1 : -1, t: 'ajuste', cuenta: id, note: 'Conciliación con el banco' };
+  M.push(m); commit({ add: [m] }); render(); acctSheet(id);
+  toast('Ajuste de ' + (diff > 0 ? '+' : '−') + gs(Math.abs(diff)) + ' en ' + a.name);
+}
+function acctForm(id) {
+  const a = id ? acct(id) : null, kind = a ? a.kind || 'banco' : 'banco';
+  const color = a ? a.color : ['green', 'orange', 'blue', 'teal', 'purple', 'pink'][S.accounts.length % 6];
+  openSheet(`${head(a ? 'Editar cuenta' : 'Nueva cuenta', `<button class="link b" data-act="saveAcct" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
+    <div class="group">${field('Nombre', `<input id="acN" list="dlBank" placeholder="Ej: Banco…" autocomplete="off" value="${esc(a ? a.name : '')}">`)}
+      ${a ? '' : field('Saldo actual', money('acS', '', 'Opcional'))}</div>${dlist('dlBank', BANKS)}
+    <div class="gh">Tipo</div><input type="hidden" id="acK" value="${kind}">
+    <div class="seg">${[['banco', 'Banco o cooperativa'], ['efectivo', 'Efectivo'], ['billetera', 'Billetera']].map(([v, l]) => `<button class="${v === kind ? 'on' : ''}" data-act="pick" data-target="acK" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="gh">Color</div><div class="card" style="padding:14px">${colorPicker('acC', color)}</div>
+    ${a ? `<button class="btn w mt2" style="--c:var(--red)" data-act="delAcct" data-id="${a.id}">Eliminar cuenta</button>` : '<p class="gf">El saldo lo copiás de la app del banco. Si lo dejás vacío, lo cargás después.</p>'}`);
+}
+function saveAcct(id) {
+  const name = $('#acN').value.trim(); if (!name) return toast('Poné un nombre');
+  const v = { name, kind: $('#acK').value, color: $('#acC').value };
+  if (id) Object.assign(acct(id), v);
+  else {
+    const raw = $('#acS').value.trim(), a = Object.assign({ id: uid(), ini: null, iniTs: 0, iniD: '', conc: '' }, v);
+    if (raw) Object.assign(a, { ini: parseN(raw), iniTs: Date.now(), iniD: today(), conc: today() });
+    S.accounts.push(a); addXP(5);
+  }
+  commit(); closeSheet(); render(); toast(id ? 'Cuenta actualizada' : 'Cuenta ' + name + ' agregada');
+}
+function delAcct(id) {
+  if (M.some(m => acctFlows(m).some(f => f[0] === id))) return toast('Tiene movimientos: cambiales la cuenta antes de borrarla');
+  S.accounts = S.accounts.filter(a => a.id !== id); commit(); closeSheet(); render(); toast('Cuenta eliminada');
+}
+function transfSheet(from) {
+  const others = S.accounts.filter(a => a.id !== from); if (!others.length) return toast('Agregá otra cuenta para transferir');
+  openSheet(`${head('Transferir', `<button class="link b" data-act="doTransf" data-id="${from}">Guardar</button>`, `<button class="link" data-act="acct" data-id="${from}">Atrás</button>`)}
+    <div class="group"><div class="cell"><div class="tx s2">Desde</div><div class="v">${esc(acct(from).name)}</div></div>${field('Monto', money('tfA'))}${field('Fecha', `<input id="tfD" type="date" value="${today()}">`)}</div>
+    <div class="gh">Hacia</div><input type="hidden" id="tfT" value="${others[0].id}">
+    <div class="chips">${others.map((a, i) => `<button class="chip ${i ? '' : 'on'}" data-act="pick" data-target="tfT" data-v="${a.id}" style="--c:var(--${a.color})"><span class="chip-ic">${sym(acctIcon(a))}</span>${esc(a.name)}</button>`).join('')}</div>
+    <button class="btn p w mt2" data-act="doTransf" data-id="${from}">Transferir</button>`);
+}
+function doTransf(from) {
+  const amt = parseN($('#tfA').value), to = $('#tfT').value; if (!amt || !to) return toast('Ingresá el monto');
+  const m = { id: uid(), ts: Date.now(), date: $('#tfD').value || today(), amt, t: 'transf', from, to };
+  M.push(m); checkin(); commit({ add: [m] }); render(); acctSheet(from); toast('Transferiste ' + gs(amt) + ' a ' + acctName(to));
+}
+// Cambiar la cuenta de un movimiento ya cargado
+function movAcctSheet(id, f = 'cuenta') {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const label = f === 'cuentaProv' ? 'Le pagaste al proveedor desde' : m.t === 'venta' ? 'Cobrado en' : m.t === 'ingreso' ? 'Entró en' : 'Pagado desde';
+  openSheet(`${head('Cuenta', `<button class="link b" data-act="saveMovAcct" data-id="${id}" data-f="${f}">Guardar</button>`, `<button class="link" data-act="movDetail" data-id="${id}">Atrás</button>`)}
+    <p class="gf" style="margin:0 4px 4px">${esc(movMeta(m).title)} · ${gs(f === 'cuentaProv' ? m.payAmt || m.costo : m.amt)}</p>
+    ${acctPicker('maC', label, f === 'cuentaProv' ? m.cuentaProv || m.cuenta || '' : m[f] || '')}
+    <button class="btn p w mt2" data-act="saveMovAcct" data-id="${id}" data-f="${f}">Guardar</button>`);
+}
+function saveMovAcct(id, f) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const v = pickedAcct('maC');
+  if (f === 'cuentaProv' && v === m.cuenta) delete m.cuentaProv; else m[f] = v;
+  commit({ add: [m] }); render(); movDetail(id); toast(v ? 'Cuenta: ' + acctName(v) : 'Sin cuenta');
+}
+// Ventas: "ya me pagaron"
+function cobrarSheet(id) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const p = m.payable && payable(m.payable), owesProv = p && payPend(p) > 0;
+  openSheet(`${head('Ya me pagaron', `<button class="link b" data-act="doCobrar" data-id="${id}">Guardar</button>`, `<button class="link" data-act="movDetail" data-id="${id}">Atrás</button>`)}
+    <div class="center" style="padding:4px 0 14px">${icoBox('bag', 'green', 'xl')}<div style="font-weight:600;margin-top:10px">${esc(m.cliente || 'Venta')}</div>${big(fmt(m.amt) + '<span class="u">Gs</span>')}<small>vendido el ${dLabel(m.date)}</small></div>
+    <div class="group">${field('Fecha de cobro', `<input id="cbD" type="date" value="${today()}">`)}</div>
+    ${acctPicker('cbCta', 'Cobrado en')}
+    ${owesProv ? `<div class="gh">¿Le pagás a ${esc(p.prov)} con esta plata?</div><input type="hidden" id="cbProv" value="si">
+      <div class="seg">${[['si', 'Sí, ya le pagué'], ['no', 'Después']].map(([v, l]) => `<button class="${v === 'si' ? 'on' : ''}" data-act="pick" data-target="cbProv" data-v="${v}">${l}</button>`).join('')}</div>
+      <p class="gf">Se cancela la deuda de ${gs(Math.min(m.costo || 0, payPend(p)))} con ${esc(p.prov)} (match), pagada desde la misma cuenta.</p>` : ''}
+    <div class="note mt">Al cobrar se reparte: ${gs(m.toCofre)} al cofre, ${gs((m.toEmp || 0) + (m.costoRet || 0))} a la caja${m.ivaRes ? ' y ' + gs(m.ivaRes) + ' al sobre IVA' : ''}.</div>
+    <button class="btn p w mt2" style="--c:var(--green)" data-act="doCobrar" data-id="${id}">Marcar cobrada</button>`);
+}
+function doCobrar(id) {
+  const m = M.find(x => x.id === id); if (!m || m.cobrada !== false) return;
+  const cta = pickedAcct('cbCta'), d = ($('#cbD') || {}).value || today();
+  Object.assign(m, { cobrada: true, cobD: d, cobTs: Date.now() });
+  if (cta) m.cuenta = cta; else delete m.cuenta;
+  ventaFunds(m, 1);
+  const p = m.payable && payable(m.payable);
+  if (p && $('#cbProv') && $('#cbProv').value === 'si' && payPend(p) > 0) { m.provPaid = true; m.payAmt = Math.min(m.costo || 0, payPend(p)); linkPay(m); }
+  SIM = null; addXP(20); checkin(); haptic(15); confetti(); checkAch(); commit({ add: [m] }); render(); movDetail(id);
+  toast('Cobrado' + (cta ? ' en ' + acctName(cta) : '') + ' · +' + gsK(m.toCofre) + ' al cofre');
+}
+function undoCobro(id) {
+  const m = M.find(x => x.id === id); if (!m || m.cobrada === false) return;
+  ventaFunds(m, -1);
+  const p = m.payable && payable(m.payable);
+  if (p && m.provPaid) { p.pagos = p.pagos.filter(x => x.venta !== m.id); m.provPaid = false; }
+  m.cobrada = false; ['cobD', 'cobTs', 'cuenta', 'cuentaProv'].forEach(k => delete m[k]);
+  SIM = null; commit({ add: [m] }); render(); movDetail(id); toast('La venta volvió a "Te deben"');
+}
+function cobrosSection() {
+  const r = receivables(); if (!r.length) return '';
+  return sh('Te deben', `<small>${gs(sum(r, m => m.amt))}</small>`) +
+    `<div class="group ic">${r.map(m => { const dd = daysBetween(m.date, today());
+      return `<button class="cell" data-act="cobrar" data-id="${m.id}">${icoBox('clock', dd > 30 ? 'red' : 'orange')}<div class="tx"><div class="t">${esc(m.cliente || 'Venta')}</div><div class="s">Vendido el ${dLabel(m.date)}${dd > 0 ? ' · hace ' + dd + (dd === 1 ? ' día' : ' días') : ' · hoy'}</div></div>
+        <div class="v"><span class="num">${gsK(m.amt)}</span><small>cobrar</small></div>${CHEV}</button>`; }).join('')}</div>
+    <p class="gf">Tocá una venta cuando te paguen: elegís en qué cuenta entró y se reparte la ganancia.</p>`;
 }
 
 /* =========================================================================
@@ -1825,11 +2074,12 @@ function ivaSheet() {
     <input type="hidden" id="ivP" value="${per}">
     <div class="seg">${[[prev, cap(MESES_L[+prev.slice(5) - 1])], [k, cap(MESES_L[+k.slice(5) - 1])]].map(([v, l]) => `<button class="${v === per ? 'on' : ''}" data-act="pick" data-target="ivP" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="group mt">${field('Monto pagado', money('ivA', per === prev ? dp : dc))}</div>
+    ${acctPicker('ivCta')}
     <p class="gf">Sale del sobre IVA. Si el sobre no alcanza, la diferencia sale de tu bolsillo.</p>`);
 }
 function doPayIva() {
   const amt = parseN($('#ivA').value); if (!amt) return toast('Ingresá un monto');
-  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'pagoiva', periodo: $('#ivP').value, fromRes: Math.max(0, Math.min(S.funds.iva, amt)) };
+  const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'pagoiva', periodo: $('#ivP').value, fromRes: Math.max(0, Math.min(S.funds.iva, amt)), cuenta: pickedAcct('ivCta') };
   applyMov(m); M.push(m); addXP(25); checkin(); checkAch(); commit({ add: [m] }); closeSheet(); render(); toast('IVA registrado');
 }
 function fundOpts() {
@@ -1935,6 +2185,8 @@ Préstamos:
 ${loans}
 Proveedores (compras a crédito, se pagan con las ventas; no es deuda con interés):
 ${provs}
+Cuentas (dónde está la plata): ${S.accounts.map(a => a.name + ' ' + (a.ini == null ? 'sin saldo cargado' : fmt(acctBal(a)))).join(' | ') || 'sin cuentas cargadas'}
+Ventas por cobrar (te deben): ${fmt(sum(receivables(), m => m.amt))}
 Cofre: ${fmt(S.funds.cofre)} | Sobre IVA: ${fmt(S.funds.iva)}
 Metas:
 ${goals}
@@ -2091,6 +2343,11 @@ const ACT = {
   undoPago: (d, el) => armed(el) && undoPago(d.id, d.pid),
   sellPayable: d => openAdd('venta', { pay: d.id }),
   assignProv: d => assignProvSheet(d.id), doAssignProv: d => doAssignProv(d.id),
+  acct: d => acctSheet(d.id), newAcct: () => acctForm(), editAcct: d => acctForm(d.id), saveAcct: d => saveAcct(d.id),
+  delAcct: (d, el) => armed(el) && delAcct(d.id), conc: d => concSheet(d.id), doConc: d => doConc(d.id),
+  transf: d => transfSheet(d.id), doTransf: d => doTransf(d.id),
+  movAcct: d => movAcctSheet(d.id, d.f), saveMovAcct: d => saveMovAcct(d.id, d.f),
+  cobrar: d => cobrarSheet(d.id), doCobrar: d => doCobrar(d.id), undoCobro: (d, el) => armed(el) && undoCobro(d.id),
   moveFund: d => moveSheet(d.from, d.to), doMove: () => doMove(),
   settings: () => settingsSheet(), saveSettings: () => saveSettings(), theme: d => setTheme(d.v),
   account: () => accountSheet(), rules: () => rulesSheet(), prompt: () => promptSheet(), copyPrompt: () => copyPrompt(),
