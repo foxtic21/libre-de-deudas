@@ -355,4 +355,43 @@ body.sheet-open{overflow:hidden}
 .road.free .calb small{color:rgba(255,255,255,.85)}
 .applied{margin-top:8px}
 .applied .bar{margin-top:5px}
+.road .t{white-space:normal;align-items:flex-start}
+.road .t svg.i{margin-top:1px}
+
+.center>.ico.xl{margin:0 auto}
+
+/* ---------- entidad (a quién le debés) ---------- */
+.eyebrow{display:block;font-size:12px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--label2);
+  margin:0 0 1px;padding:0 104px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button.eyebrow{display:inline-flex;align-items:center;gap:3px;border:0;background:none;font-family:inherit;color:var(--blue);
+  padding:0;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px}
+button.eyebrow svg.i{width:13px;height:13px;stroke-width:2.6}
+.entf>span{max-width:58%;min-width:0}
+.entf>span .t{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.entf>span small{display:block;font-size:12px}
+
+/* ---------- gráfico: cómo baja tu deuda ---------- */
+.dchart{position:relative;margin-top:14px;touch-action:pan-y;-webkit-user-select:none;user-select:none}
+.dchart svg{display:block;width:100%;height:auto;overflow:visible;outline:none}
+.dchart svg:focus-visible{outline:2px solid var(--blue);outline-offset:4px;border-radius:6px}
+.dchart .grid line{stroke:var(--sep);stroke-width:1;shape-rendering:crispEdges}
+.dchart text{font-size:11px;fill:var(--label2);font-variant-numeric:tabular-nums;font-family:inherit}
+.dchart text.lbl{font-weight:600;fill:var(--label)}
+.dchart .real{fill:none;stroke:var(--red);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.dchart .wash{fill:var(--red);opacity:.1}
+.dchart .proj{fill:none;stroke:var(--red);stroke-width:2;stroke-dasharray:2 5;stroke-linecap:round;opacity:.55}
+.dchart .dot{fill:var(--red);stroke:var(--bg2);stroke-width:2}
+.dchart .xh{stroke:var(--label3);stroke-width:1;opacity:0}
+.dchart .hov{opacity:0}
+.dchart .xh.on,.dchart .hov.on{opacity:1}
+.dchart .tip{position:absolute;top:0;left:0;pointer-events:none;background:var(--bg2);border-radius:12px;padding:7px 11px;
+  box-shadow:0 6px 20px rgba(0,0,0,.14),0 0 0 .5px var(--sep);font-size:12px;color:var(--label2);white-space:nowrap;
+  transform:translateX(-50%);opacity:0;transition:opacity .12s}
+.dchart .tip.on{opacity:1}
+.dchart .tip b{display:block;font-size:15px;font-weight:700;color:var(--label);font-variant-numeric:tabular-nums}
+.dchart .tip span{display:flex;align-items:center;gap:6px}
+.lk,.lkeys i{display:inline-block;width:14px;height:0;border-top:2px solid var(--red);flex:none}
+.lk.d,.lkeys i.d{border-top-style:dotted;opacity:.7}
+.lkeys{display:flex;gap:16px;font-size:12px;color:var(--label2);margin-top:8px}
+.lkeys span{display:flex;align-items:center;gap:6px}
 @media (max-width:380px){ .symgrid{grid-template-columns:repeat(6,1fr)} .bignum{font-size:29px} }

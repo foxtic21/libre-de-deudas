@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.1.1';
+import * as Store from './store.js?v=2.2.0';
 
 /* =========================================================================
    Utilidades
@@ -150,7 +150,9 @@ function blankState() {
   return {
     v: 2, created: today(), profile: { nombre: '', contexto: '' }, settings: DEFAULT_SETTINGS(),
     baseCuotas: 0, cards: [], loans: [], budget: DEFAULT_BUDGET(), funds: { cofre: 0, iva: 0 }, goals: DEFAULT_GOALS(),
-    tasks: {}, ach: {}, xp: 0, checkins: [], initialTotal: 0
+    tasks: {}, ach: {}, xp: 0, checkins: [], initialTotal: 0,
+    payables: [], // deudas con proveedores (compras a crédito): { id, prov, desc, amt, iva, date, venc, venta, pagos: [{ id, d, amt, venta | mov }] }
+    hist: []      // foto diaria de la deuda: { d, m (préstamos + tarjetas), p (proveedores pendientes) }
   };
 }
 function normalize(raw) {
@@ -166,6 +168,8 @@ function normalize(raw) {
   s.goals.forEach(g => { const d = GOAL_META[g.id] || {}; g.sym = g.sym || d.sym || 'star'; g.color = g.color || d.color || 'blue'; });
   s.loans.forEach((l, i) => { l.color = l.color || ['red', 'orange', 'purple', 'pink', 'indigo', 'teal'][i % 6]; });
   s.tasks = s.tasks || {}; s.ach = s.ach || {}; s.checkins = s.checkins || []; s.xp = s.xp || 0;
+  s.payables = (s.payables || []).map(p => Object.assign({ pagos: [] }, p));
+  s.hist = s.hist || [];
   return s;
 }
 // Copias de la versión 1 (archivo libre-de-deudas.html)
@@ -215,6 +219,7 @@ let TAB = 'hoy', MK = ym(today()), MF = 'todos';
 const movSig = ms => ms.length + ':' + ms.reduce((a, m) => Math.max(a, m.ts || 0), 0);
 function setSync(s) { const d = $('#syncDot'); if (d) d.className = 'sync ' + s; }
 function commit({ add = [], del = [] } = {}) {
+  snapDebt();
   add.forEach(m => { M = M.filter(x => x.id !== m.id); M.push(m); });
   if (del.length) M = M.filter(m => !del.includes(m.id));
   LAST = stable(S) + '|' + movSig(M);
@@ -262,6 +267,33 @@ const travelOpen = () => isFree() || S.settings.viajesAntes;
 const pctFree = () => S.initialTotal > 0 ? clamp((1 - totalDebt() / S.initialTotal) * 100, 0, 100) : 0;
 const ivaOf = (amt, iva) => iva === '10' ? Math.round(amt / 11) : iva === '5' ? Math.round(amt / 21) : 0;
 
+// Entidades (a quién le debés) y proveedores
+const entOf = x => String(x.entidad || '').trim();
+const debtName = l => entOf(l) ? entOf(l) + ' · ' + l.name : l.name;
+const BANKS = ['Banco Itaú', 'Banco Continental', 'Sudameris Bank', 'Banco Familiar', 'ueno bank', 'Banco GNB', 'Banco Basa', 'Banco Atlas', 'Interfisa Banco', 'Bancop', 'Banco Nacional de Fomento', 'Banco Río', 'Zeta Banco', 'Tu Financiera', 'Financiera FIC'];
+const uniq = a => [...new Set(a.filter(Boolean))];
+const entOptions = () => uniq(S.loans.concat(S.cards).map(entOf).concat(BANKS));
+const dlist = (id, items) => `<datalist id="${id}">${items.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>`;
+const payable = id => S.payables.find(p => p.id === id);
+const payPaid = p => sum(p.pagos, x => x.amt);
+const payPend = p => Math.max(0, p.amt - payPaid(p));
+const provDebt = (s = S) => sum(s.payables || [], payPend);
+const knownProvs = () => uniq(S.payables.map(p => p.prov));
+const pendPayables = () => S.payables.filter(p => payPend(p) > 0);
+
+// Foto diaria de la deuda para el gráfico "Cómo baja tu deuda"
+function snapDebt() {
+  if (!S) return;
+  const t = today(), m = totalDebt(), p = provDebt(), h = S.hist;
+  if (!h.length && S.initialTotal > 0 && S.created && S.created < t) h.push({ d: S.created, m: S.initialTotal, p: 0 });
+  const last = h[h.length - 1];
+  if (last && last.d === t) { last.m = m; last.p = p; }
+  else if (!last || last.m !== m || last.p !== p) h.push({ d: t, m, p });
+  if (h.length > 900) S.hist = h.slice(-900);
+}
+// Valor de la deuda en una fecha (la última foto hasta ese día)
+function debtAt(d) { let v = null; for (const x of S.hist) { if (x.d <= d) v = x.m; else break; } return v; }
+
 function attackOrder() {
   const act = activeLoans();
   const allTae = act.length > 0 && act.every(l => taeN(l) > 0);
@@ -272,7 +304,7 @@ function attackOrder() {
    Monto fijo para deudas cada mes; primero la tarjeta (tasa alta), después los préstamos en orden de ataque.
    Lo que libera cada préstamo pasa al siguiente (bola de nieve). */
 function simulate() {
-  const loans = S.loans.map(l => ({ id: l.id, name: l.name, cs: l.cuotas.filter(c => !c.paid).map(c => ({ d: c.d, a: c.a })) }));
+  const loans = S.loans.map(l => ({ id: l.id, name: debtName(l), cs: l.cuotas.filter(c => !c.paid).map(c => ({ d: c.d, a: c.a })) }));
   let cd = cardDebt();
   const left = () => sum(loans, l => sum(l.cs, c => c.a)) + cd;
   const k0 = ym(today()), months = [];
@@ -284,8 +316,9 @@ function simulate() {
     let budget = i === 0 ? sum(loans, l => sum(l.cs.filter(c => ym(c.d) <= k), c => c.a)) + Math.max(0, S.funds.cofre) : debtBudget();
     let lump = 0;
     if (!S.settings.lumpRecibido && S.settings.lumpMes === k && S.settings.lump) { lump = S.settings.lump; budget += lump; }
-    const kills = []; let cuotas = 0;
-    loans.forEach(l => { while (l.cs.length && ym(l.cs[0].d) <= k) { budget -= l.cs[0].a; cuotas += l.cs[0].a; l.cs.shift(); if (!l.cs.length) kills.push(l.name); } });
+    const kills = [], killIds = []; let cuotas = 0;
+    const kill = l => { kills.push(l.name); killIds.push(l.id); };
+    loans.forEach(l => { while (l.cs.length && ym(l.cs[0].d) <= k) { budget -= l.cs[0].a; cuotas += l.cs[0].a; l.cs.shift(); if (!l.cs.length) kill(l); } });
     let extra = Math.max(0, budget), tarjeta = 0, ataque = 0, target = null;
     if (cd > 0 && extra > 0) { tarjeta = Math.min(cd, extra); cd -= tarjeta; extra -= tarjeta; }
     for (const id of order) {
@@ -293,10 +326,10 @@ function simulate() {
       while (extra > 0 && l.cs.length) {
         if (!target) target = l.name;
         const c = l.cs[l.cs.length - 1];
-        if (c.a <= extra) { extra -= c.a; ataque += c.a; l.cs.pop(); if (!l.cs.length) kills.push(l.name); } else { c.a -= extra; ataque += extra; extra = 0; }
+        if (c.a <= extra) { extra -= c.a; ataque += c.a; l.cs.pop(); if (!l.cs.length) kill(l); } else { c.a -= extra; ataque += extra; extra = 0; }
       }
     }
-    months.push({ k, cuotas, tarjeta, cardDone: tarjeta > 0 && cd <= 0, ataque, target, lump, kills, left: left() });
+    months.push({ k, cuotas, tarjeta, cardDone: tarjeta > 0 && cd <= 0, ataque, target, lump, kills, killIds, left: left() });
     if (left() <= 0) return { fin: k, months };
     k = addMonth(k, 1);
   }
@@ -307,6 +340,9 @@ function noPlanEnd() { const e = S.loans.reduce((m, l) => { const d = lastDate(l
 let SIM = null;
 const sim = () => SIM || (SIM = simulate());
 const projection = () => sim().fin;
+// Mes en que cae cada préstamo / la tarjeta según la hoja de ruta
+const loanFreeMonth = id => { const m = sim().months.find(x => x.killIds.includes(id)); return m ? m.k : null; };
+const cardFreeMonth = () => { if (cardDebt() <= 0) return null; const m = sim().months.find(x => x.cardDone); return m ? m.k : null; };
 const inMonth = (k, types) => M.filter(m => ym(m.date) === k && (!types || types.includes(m.t)));
 function monthSpent(cat, k = ym(today())) {
   if (cat === 'cuotas') return sum(inMonth(k, ['cuota']), m => m.amt);
@@ -319,7 +355,10 @@ function monthSummary(k) {
   const ms = M.filter(m => ym(m.date) === k), f = t => ms.filter(t);
   const ingresos = sum(f(m => m.t === 'ingreso' || m.t === 'venta'), m => m.amt);
   const gPers = sum(f(m => m.t === 'gasto' && m.ambito !== 'negocio'), m => m.amt);
-  const gNeg = sum(f(m => m.t === 'gasto' && m.ambito === 'negocio'), m => m.amt) + sum(f(m => m.t === 'venta'), m => m.costo || 0);
+  // Negocio: gastos + costo pagado al proveedor con la venta + pagos directos a proveedores (los "con la venta" ya están en el costo)
+  const gNeg = sum(f(m => m.t === 'gasto' && m.ambito === 'negocio'), m => m.amt)
+    + sum(f(m => m.t === 'venta' && (m.costoA || 'proveedor') === 'proveedor'), m => m.costo || 0)
+    + sum(f(m => m.t === 'pagoprov' && m.src !== 'venta'), m => m.amt);
   const deudas = sum(f(m => ['cuota', 'ataque', 'precancel'].includes(m.t)), m => m.amt);
   const iva = sum(f(m => m.t === 'pagoiva'), m => m.amt);
   const tc = sum(f(m => m.t === 'gasto' && m.medio === 'tc'), m => m.amt);
@@ -433,6 +472,18 @@ function checkin() { const t = today(); if (!S.checkins.includes(t)) S.checkins.
    Efectos de cada movimiento (aplicar / revertir)
    ========================================================================= */
 function addTo(k, v) { if (!v) return; if (k === 'cofre' || k === 'iva') S.funds[k] += v; else { const g = goal(k); if (g) g.saved += v; } }
+// Match venta ↔ deuda con el proveedor: la venta queda vinculada y, si ya le pagaste, cancela la deuda
+function linkPay(m) {
+  const p = m.payable && payable(m.payable); if (!p) return;
+  p.venta = m.id;
+  if (m.provPaid && !p.pagos.some(x => x.venta === m.id)) p.pagos.push({ id: m.id, d: m.date, amt: m.payAmt || m.costo, venta: m.id });
+}
+function unlinkPay(m) {
+  const p = m.payable && payable(m.payable); if (!p) return;
+  if (m.payNew) { S.payables = S.payables.filter(x => x.id !== p.id); return; }
+  p.pagos = p.pagos.filter(x => x.venta !== m.id);
+  if (p.venta === m.id) p.venta = null;
+}
 function applyMov(m) {
   switch (m.t) {
     case 'gasto':
@@ -440,11 +491,17 @@ function applyMov(m) {
       if (m.ambito === 'negocio' && m.medio === 'caja') addTo('emprender', -m.amt);
       break;
     case 'ingreso': Object.entries(m.split || {}).forEach(([k, v]) => addTo(k, v)); if (m.tipo === 'aguinaldo') S.settings.lumpRecibido = true; break;
-    case 'venta': addTo('cofre', m.toCofre); addTo('emprender', (m.toEmp || 0) + (m.costoRet || 0)); addTo('iva', m.ivaRes); break;
+    case 'venta': addTo('cofre', m.toCofre); addTo('emprender', (m.toEmp || 0) + (m.costoRet || 0)); addTo('iva', m.ivaRes); linkPay(m); break;
     case 'aporte': addTo(m.goal, m.amt); break;
     case 'retiro': addTo(m.goal, -m.amt); break;
     case 'mover': addTo(m.from, -m.amt); addTo(m.to, m.amt); break;
     case 'pagoiva': addTo('iva', -m.fromRes); break;
+    case 'pagoprov': {
+      const p = payable(m.payable);
+      if (p && !p.pagos.some(x => x.id === m.id)) p.pagos.push({ id: m.id, d: m.date, amt: m.amt, mov: m.id });
+      if (m.src === 'caja') addTo('emprender', -m.amt);
+      break;
+    }
   }
   SIM = null;
 }
@@ -455,7 +512,12 @@ function revertMov(m) {
       if (m.ambito === 'negocio' && m.medio === 'caja') addTo('emprender', m.amt);
       break;
     case 'ingreso': Object.entries(m.split || {}).forEach(([k, v]) => addTo(k, -v)); if (m.tipo === 'aguinaldo') S.settings.lumpRecibido = false; break;
-    case 'venta': addTo('cofre', -m.toCofre); addTo('emprender', -((m.toEmp || 0) + (m.costoRet || 0))); addTo('iva', -(m.ivaRes || 0)); break;
+    case 'venta': addTo('cofre', -m.toCofre); addTo('emprender', -((m.toEmp || 0) + (m.costoRet || 0))); addTo('iva', -(m.ivaRes || 0)); unlinkPay(m); break;
+    case 'pagoprov': {
+      const p = payable(m.payable); if (p) p.pagos = p.pagos.filter(x => x.id !== m.id);
+      if (m.src === 'caja') addTo('emprender', m.amt);
+      break;
+    }
     case 'aporte': addTo(m.goal, -m.amt); break;
     case 'retiro': addTo(m.goal, m.amt); break;
     case 'mover': addTo(m.from, m.amt); addTo(m.to, -m.amt); break;
@@ -556,7 +618,7 @@ function go(tab) { if (!VIEWS[tab]) return; closeSheet(); TAB = tab; lsSet('libr
 function showApp() {
   APP_ON = true; document.body.classList.remove('auth'); $('#dock').classList.remove('hide');
   TAB = VIEWS[lsGet('libre-tab')] ? lsGet('libre-tab') : 'hoy';
-  const before = stable(S); checkAch(); if (stable(S) !== before) commit();
+  const before = stable(S); checkAch(); snapDebt(); if (stable(S) !== before) commit();
   render(true);
 }
 
@@ -613,8 +675,9 @@ function setupCard() {
 }
 function upcoming() {
   const t = today(), ups = [];
-  S.loans.forEach(l => { const c = nextCuota(l); if (c) ups.push({ d: c.d, t: l.name, s: 'Cuota ' + c.n, a: c.a, icon: 'bank', color: l.color, act: 'payCuota', id: l.id }); });
-  S.cards.forEach(c => { if (c.extracto > 0 && c.vence) ups.push({ d: c.vence, t: c.name, s: 'Pagá el total', a: c.extracto, icon: 'creditcard', color: 'indigo', act: 'payCard', id: c.id }); });
+  S.loans.forEach(l => { const c = nextCuota(l); if (c) ups.push({ d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n, a: c.a, icon: 'bank', color: l.color, act: 'payCuota', id: l.id }); });
+  S.cards.forEach(c => { if (c.extracto > 0 && c.vence) ups.push({ d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Pagá el total', a: c.extracto, icon: 'creditcard', color: 'indigo', act: 'payCard', id: c.id }); });
+  pendPayables().forEach(p => { if (p.venc) ups.push({ d: p.venc, t: p.prov, s: 'Proveedor · ' + esc(p.desc || 'compra'), a: payPend(p), icon: 'box', color: 'indigo', act: 'payable', id: p.id }); });
   ups.sort((a, b) => a.d.localeCompare(b.d));
   return ups.slice(0, 5).map(u => {
     const dd = daysBetween(t, u.d), col = dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'gray';
@@ -631,7 +694,7 @@ const MF_FILTERS = {
   todos: () => true,
   gastos: m => m.t === 'gasto',
   ingresos: m => m.t === 'ingreso' || m.t === 'venta',
-  deudas: m => ['cuota', 'ataque', 'precancel', 'pagotc', 'pagoiva'].includes(m.t)
+  deudas: m => ['cuota', 'ataque', 'precancel', 'pagotc', 'pagoiva', 'pagoprov'].includes(m.t)
 };
 const MEDIO_L = { debito: 'Débito', efectivo: 'Efectivo', tc: 'Tarjeta', caja: 'Caja del negocio' };
 const FUND_L = { cofre: 'Cofre de ataque', iva: 'Sobre IVA' };
@@ -651,6 +714,7 @@ function movMeta(m) {
     case 'precancel': return { icon: 'bolt', color: 'yellow', title: 'Precancelación · ' + ln(m.loan), sign: -1 };
     case 'pagotc': return { icon: 'creditcard', color: 'indigo', title: 'Pago de ' + ((card(m.card) || {}).name || 'tarjeta'), sign: -1 };
     case 'pagoiva': return { icon: 'receipt', color: 'gray', title: 'Pago de IVA' + (m.periodo ? ' · ' + ymLabel(m.periodo) : ''), sign: -1 };
+    case 'pagoprov': return { icon: 'box', color: 'indigo', title: 'Pago a ' + (m.prov || 'proveedor'), sign: -1 };
     case 'mover': return { icon: 'arrows', color: 'gray', title: fundName(m.from) + ' → ' + fundName(m.to), sign: 0 };
     case 'aporte': { const g = goal(m.goal) || {}; return { icon: g.sym || 'star', color: g.color || 'gray', title: 'Aporte a ' + (g.name || 'meta'), sign: 0 }; }
     case 'retiro': { const g = goal(m.goal) || {}; return { icon: 'arrowUp', color: 'gray', title: 'Retiro de ' + (g.name || 'meta'), sign: 0 }; }
@@ -663,6 +727,7 @@ function movRow(m) {
   if (m.medio === 'tc') tags.push('<span class="pill" style="--c:var(--red)">TC</span>');
   if (m.ivaAmt) tags.push(`<span class="pill">IVA ${m.iva}%</span>`);
   if (m.t === 'venta' && m.costo) tags.push(`<span class="pill" style="--c:var(--green)">ganancia ${gsK(m.ganancia)}</span>`);
+  if (m.t === 'venta' && m.prov) tags.push(`<span class="pill" style="--c:var(--indigo)">${esc(m.prov)}</span>`);
   const showNote = m.note && !['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t);
   const sub = showNote ? esc(m.note) : m.t === 'gasto' ? (MEDIO_L[m.medio] || '') : '';
   const amt = m.t === 'cero' ? '' : (mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt);
@@ -702,12 +767,15 @@ function vMovs() {
 /* =========================================================================
    Pantalla: Batalla (deudas, tarjetas y hoja de ruta)
    ========================================================================= */
+// Entidad arriba del nombre (estilo "eyebrow" de iOS); si falta, un botón para cargarla
+const entTag = (x, act, dead = false) => entOf(x) ? `<div class="eyebrow">${esc(entOf(x))}</div>`
+  : dead ? '' : `<button class="eyebrow add" data-act="${act}" data-id="${x.id}">${sym('plus')}A quién le debés</button>`;
 function bossCard(l, isTarget) {
   const s = loanSaldo(l), tot = loanTotal(l), dead = s <= 0, nc = nextCuota(l), rest = l.cuotas.filter(c => !c.paid).length;
   const pos = attackOrder().list.findIndex(x => x.id === l.id);
   return `<div class="card boss ${dead ? 'dead' : ''} ${isTarget ? 'target' : ''}">
     ${isTarget ? `<span class="pill tag" style="--c:var(--orange)">${sym('target')}Objetivo</span>` : dead ? `<span class="pill tag" style="--c:var(--green)">${sym('trophy')}Derrotado</span>` : `<span class="pill tag">#${pos + 1}</span>`}
-    <div class="head"><span class="ico lg" style="--c:var(--${dead ? 'gray' : l.color})">${sym(dead ? 'check' : 'bank')}</span><div class="grow"><h3>${esc(l.name)}</h3>
+    <div class="head"><span class="ico lg" style="--c:var(--${dead ? 'gray' : l.color})">${sym(dead ? 'check' : 'bank')}</span><div class="grow">${entTag(l, 'editLoan', dead)}<h3>${esc(l.name)}</h3>
       <small>${dead ? (l.precancel ? 'Precancelado · ahorro ' + gs(l.precancel.ahorro) : 'Pagado completo') : rest + (rest === 1 ? ' cuota' : ' cuotas') + ' · termina ' + dLabel(lastDate(l)) + (taeN(l) ? ' · TAE ' + esc(l.tae) + '%' : '')}</small></div></div>
     <div class="row between mt"><span class="hpn">${vu(fmt(s))}</span><small>de ${gsK(tot)}</small></div>
     <div class="mt">${bar(tot ? s / tot * 100 : 0, 'hpbar lg')}</div>
@@ -721,7 +789,7 @@ function cardBoss(c) {
   const used = c.linea ? c.saldo / c.linea * 100 : 0;
   return `<div class="card boss ${c.saldo > 0 ? '' : 'dead'}">
     ${c.saldo > 0 ? '' : `<span class="pill tag" style="--c:var(--green)">${sym('check')}Domada</span>`}
-    <div class="head"><span class="ico lg card-art">${sym('creditcard')}</span><div class="grow"><h3>${esc(c.name)}</h3><small>TAN ${esc(c.tan || '—')}% · usás ${used.toFixed(0)}% de la línea</small></div></div>
+    <div class="head"><span class="ico lg card-art">${sym('creditcard')}</span><div class="grow">${entTag(c, 'editCard')}<h3>${esc(c.name)}</h3><small>TAN ${esc(c.tan || '—')}% · usás ${used.toFixed(0)}% de la línea</small></div></div>
     <div class="row between mt"><span class="hpn">${vu(fmt(c.saldo))}</span><small>línea ${gsK(c.linea)}</small></div>
     <div class="mt">${bar(used, 'lg', used > 30 ? 'var(--orange)' : 'var(--blue)')}</div>
     ${c.extracto > 0 ? `<div class="note mt">Extracto <b>${gs(c.extracto)}</b>${c.vence ? ' · vence <b>' + dLabel(c.vence) + '</b>' : ''}. Pagar solo el mínimo (${gs(c.minimo)}) genera intereses sobre el resto: <b>pagá siempre el total</b>.</div>` : ''}
@@ -754,19 +822,167 @@ function roadmap() {
     `<p class="gf" style="margin:-2px 2px 10px">Se recalcula con cada pago, ataque o venta que registrás. Incluye la tarjeta (${gs(cardDebt())}) como primer objetivo porque tiene la tasa más alta. Supone ${gs(debtBudget())}/mes para deudas${S.settings.lump && !S.settings.lumpRecibido ? ' y el aguinaldo de ' + ymLabel(S.settings.lumpMes) : ''}.</p>
     <div class="group roadmap">${rows}</div>`;
 }
+/* ---------- Gráfico: cómo baja tu deuda (real + proyección) ---------- */
+let DCH = null; // puntos del gráfico para el tooltip
+const niceStep = raw => { const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1)))), f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; };
+const dayN = s => Date.parse(s + 'T12:00:00') / 864e5;
+function debtChart() {
+  const t = today(), now = totalDebt(), r = sim();
+  const real = S.hist.filter(h => h.d < t).map(h => ({ d: h.d, v: h.m })).concat([{ d: t, v: now }]);
+  const proj = [{ d: t, v: now }].concat(r.months.slice(0, 36).map(m => ({ d: m.k + '-' + pad(lastDay(m.k)), v: Math.max(0, m.left), k: m.k })));
+  const W = Math.round(Math.max(280, Math.min(720, document.documentElement.clientWidth || 360) - 64)), H = 184, L = 46, R = 16, T = 14, B = 26;
+  const x0 = dayN(real[0].d), x1 = Math.max(dayN(proj[proj.length - 1].d), x0 + 30);
+  const vmax = Math.max(1, ...real.map(p => p.v), ...proj.map(p => p.v));
+  const step = niceStep(vmax / 2.5), ymax = vmax * 1.08;
+  const X = d => +(L + (dayN(d) - x0) / (x1 - x0) * (W - L - R)).toFixed(1);
+  const Y = v => +(T + (1 - v / ymax) * (H - T - B)).toFixed(1);
+  let grid = '';
+  for (let v = 0; v <= ymax; v += step) grid += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 8}" y="${Y(v) + 4}" text-anchor="end">${v ? gsK(v) : '0'}</text>`;
+  // Etiquetas de meses (sin pisarse)
+  let xl = '', lastX = -99, k = ym(real[0].d);
+  const kEnd = ym(proj[proj.length - 1].d);
+  while (k <= kEnd) {
+    const x = X(k + '-01');
+    if (x >= L && x - lastX >= 42 && x <= W - R - 10) { xl += `<text x="${x}" y="${H - 7}" text-anchor="middle">${MESES[+k.slice(5) - 1]}${k.endsWith('-01') || lastX < 0 ? ' ' + k.slice(2, 4) : ''}</text>`; lastX = x; }
+    k = addMonth(k, 1);
+  }
+  let pr = `M${X(real[0].d)},${Y(real[0].v)}`;
+  for (let i = 1; i < real.length; i++) pr += `H${X(real[i].d)}V${Y(real[i].v)}`;
+  const area = pr + `V${Y(0)}H${X(real[0].d)}Z`;
+  const pp = proj.length > 1 ? 'M' + proj.map(p => X(p.d) + ',' + Y(p.v)).join('L') : '';
+  const end = proj[proj.length - 1], free = proj.length > 1 && end.v <= 0;
+  DCH = {
+    W, H, i: -1,
+    pts: real.map((p, i) => ({ x: X(p.d), y: Y(p.v), v: p.v, lab: p.d === t ? 'Hoy' : dLabel(p.d), kind: 'real', i }))
+      .concat(proj.slice(1).map(p => ({ x: X(p.d), y: Y(p.v), v: p.v, lab: 'Fin de ' + MESES_L[+p.k.slice(5) - 1] + ' ' + p.k.slice(0, 4), kind: 'proj' })))
+  };
+  DCH.today = real.length - 1;
+  const label = `Deuda total: ${gs(now)} hoy. ${free ? 'Llega a cero en ' + ymLabel(end.k) + ' según la hoja de ruta.' : ''} Usá las flechas para recorrer el gráfico.`;
+  return `<div class="dchart">
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" tabindex="0" role="img" aria-label="${esc(label)}">
+      <g class="grid">${grid}</g>${xl}
+      <path class="wash" d="${area}"/>
+      ${pp ? `<path class="proj" d="${pp}"/>` : ''}
+      <path class="real" d="${pr}"/>
+      ${free ? `<text x="${X(end.d)}" y="${Y(0) - 8}" text-anchor="end" class="lbl">Libre · ${MESES[+end.k.slice(5) - 1]} ${end.k.slice(2, 4)}</text>` : ''}
+      <line class="xh" id="dcX" x1="0" x2="0" y1="${T}" y2="${H - B}"/>
+      <circle class="dot" cx="${X(t)}" cy="${Y(now)}" r="4.5"/>
+      <circle class="dot hov" id="dcP" cx="0" cy="0" r="4.5"/>
+    </svg>
+    <div class="tip" id="dcT" aria-hidden="true"></div>
+  </div>`;
+}
+function dchartShow(i) {
+  if (!DCH || !DCH.pts[i]) return;
+  const p = DCH.pts[i], svg = $('.dchart svg'), tip = $('#dcT'); if (!svg || !tip) return;
+  DCH.i = i;
+  const xh = $('#dcX'), dp = $('#dcP');
+  xh.setAttribute('x1', p.x); xh.setAttribute('x2', p.x); xh.classList.add('on');
+  dp.setAttribute('cx', p.x); dp.setAttribute('cy', p.y); dp.classList.add('on');
+  const b = document.createElement('b'); b.textContent = gs(p.v);
+  const s = document.createElement('span'); const key = document.createElement('i'); key.className = 'lk' + (p.kind === 'proj' ? ' d' : '');
+  s.append(key, document.createTextNode(p.lab + (p.kind === 'proj' ? ' · proyección' : ' · real')));
+  tip.replaceChildren(b, s);
+  const w = svg.getBoundingClientRect().width, sc = w / DCH.W;
+  tip.style.left = clamp(p.x * sc, 80, w - 80) + 'px';
+  tip.style.top = (p.y < DCH.H * 0.45 ? (DCH.H - 26) * sc - 50 : 0) + 'px';
+  tip.classList.add('on');
+}
+function dchartHide() {
+  if (!DCH) return; DCH.i = -1;
+  ['#dcX', '#dcP', '#dcT'].forEach(s => { const e = $(s); if (e) e.classList.remove('on'); });
+}
+function dchartPointer(e) {
+  const c = e.target.closest && e.target.closest('.dchart');
+  if (!c || !DCH) { if (DCH && DCH.i >= 0) dchartHide(); return; }
+  const rc = c.querySelector('svg').getBoundingClientRect(), x = (e.clientX - rc.left) / rc.width * DCH.W;
+  let bi = 0; DCH.pts.forEach((p, i) => { if (Math.abs(p.x - x) < Math.abs(DCH.pts[bi].x - x)) bi = i; });
+  if (bi !== DCH.i) dchartShow(bi);
+}
+function debtCard() {
+  const tot = totalDebt(), ini = S.initialTotal, baj = ini - tot, k0 = ym(today());
+  const prevEnd = dStr(new Date(+k0.slice(0, 4), +k0.slice(5, 7) - 1, 0));
+  const first = S.hist.find(h => ym(h.d) === k0);
+  const startM = debtAt(prevEnd) ?? (first ? first.m : tot), mes = startM - tot;
+  const sg = v => v > 0 ? '−' + gsK(v) : v < 0 ? '+' + gsK(-v) : '0';
+  return `<div class="card">
+    <div class="g3">
+      <div class="kv"><div class="k">Al empezar</div><div class="n">${gsK(ini)}</div></div>
+      <div class="kv"><div class="k">Bajaste</div><div class="n ${baj > 0 ? 'pos' : ''}">${sg(baj)}</div></div>
+      <div class="kv"><div class="k">Este mes</div><div class="n ${mes > 0 ? 'pos' : mes < 0 ? 'neg' : ''}">${sg(mes)}</div></div>
+    </div>
+    ${debtChart()}
+    <div class="lkeys"><span><i></i>Real</span><span><i class="d"></i>Hoja de ruta</span></div>
+    <p class="gf" style="margin:8px 0 0">La app guarda una foto de tu deuda cada día que la usás: la línea llena se va dibujando sola a medida que pagás. Préstamos + tarjeta; los proveedores van aparte.</p>
+  </div>`;
+}
+
+/* ---------- Deudas por entidad (a quién le debés) ---------- */
+function entityRows() {
+  const g = new Map(), grp = n => { if (!g.has(n)) g.set(n, { name: n, loans: [], cards: [] }); return g.get(n); };
+  S.loans.forEach(l => grp(entOf(l)).loans.push(l));
+  S.cards.forEach(c => grp(entOf(c)).cards.push(c));
+  return [...g.values()].map(e => {
+    const lv = e.loans.filter(l => loanSaldo(l) > 0), cv = e.cards.filter(c => c.saldo > 0);
+    const orig = sum(e.loans, loanTotal), saldoL = sum(e.loans, loanSaldo);
+    const fms = lv.map(l => loanFreeMonth(l.id)).concat(cv.length ? [cardFreeMonth()] : []);
+    return Object.assign(e, {
+      saldo: saldoL + sum(e.cards, c => Math.max(0, c.saldo)), pct: orig ? (1 - saldoL / orig) * 100 : null,
+      free: fms.length && fms.every(Boolean) ? fms.sort()[fms.length - 1] : null, alive: lv.length + cv.length,
+      color: (e.loans[0] || {}).color || 'indigo'
+    });
+  }).sort((a, b) => (b.saldo > 0) - (a.saldo > 0) || (a.free || '9999').localeCompare(b.free || '9999') || b.saldo - a.saldo);
+}
+const mShort = k => k ? MESES[+k.slice(5) - 1] + ' ' + k.slice(0, 4) : '—';
+function entRow(e) {
+  const dead = e.saldo <= 0, parts = [];
+  if (e.loans.length) parts.push(e.loans.length + (e.loans.length === 1 ? ' préstamo' : ' préstamos'));
+  if (e.cards.length) parts.push(e.cards.length === 1 ? '1 tarjeta' : e.cards.length + ' tarjetas');
+  const sub = dead ? 'Ya no le debés nada' : (e.pct != null ? e.pct.toFixed(0) + '% pagado · ' : '') + parts.join(' + ') + (e.free ? ' · cae en ' + mShort(e.free) : '');
+  const icon = dead ? 'check' : e.loans.length ? 'bank' : 'creditcard', color = dead ? 'green' : !e.name ? 'gray' : e.loans.length ? e.color : 'indigo';
+  return `<button class="cell" data-act="entSheet" data-ent="${esc(e.name)}">${icoBox(icon, color)}<div class="tx">
+    <div class="row between"><span class="t">${e.name ? esc(e.name) : '<span class="s2">Sin entidad</span>'}</span><span class="num" style="font-size:15px;flex:none">${dead ? `<span class="pill" style="--c:var(--green)">Libre</span>` : gsK(e.saldo)}</span></div>
+    <div class="s">${sub}</div>
+    ${!dead && e.pct != null ? `<div style="margin-top:7px">${bar(e.pct, '', 'var(--green)')}</div>` : ''}</div>${CHEV}</button>`;
+}
+function provGroups() {
+  const g = new Map();
+  S.payables.forEach(p => { if (!g.has(p.prov)) g.set(p.prov, []); g.get(p.prov).push(p); });
+  return [...g.entries()].map(([prov, ps]) => ({ prov, ps, pend: sum(ps, payPend), n: ps.filter(p => payPend(p) > 0).length }))
+    .sort((a, b) => b.pend - a.pend);
+}
+function provGroupRow(g) {
+  const sub = g.pend > 0 ? g.n + (g.n === 1 ? ' compra a pagar' : ' compras a pagar') + ' · se paga con tus ventas' : 'Al día · ' + g.ps.length + (g.ps.length === 1 ? ' compra pagada' : ' compras pagadas');
+  return `<button class="cell" data-act="provSheet" data-prov="${esc(g.prov)}">${icoBox(g.pend > 0 ? 'box' : 'check', g.pend > 0 ? 'indigo' : 'green')}<div class="tx"><div class="t">${esc(g.prov)}</div><div class="s">${sub}</div></div>
+    <div class="v">${g.pend > 0 ? `<span class="num">${gsK(g.pend)}</span><small>a pagar</small>` : `<span class="pill" style="--c:var(--green)">${sym('check')}Al día</span>`}</div>${CHEV}</button>`;
+}
+function entSection() {
+  if (!S.loans.length && !S.cards.length && !S.payables.length) return '';
+  const rows = entityRows(), pg = provGroups();
+  return sh('Por entidad', S.loans.length || S.cards.length ? '<button class="link" data-act="entFill">Editar</button>' : '') +
+    (rows.length ? `<p class="gf" style="margin:-2px 2px 10px">A quién le debés, en el orden en que te las vas sacando de encima.</p><div class="group ic">${rows.map(entRow).join('')}</div>` : '') +
+    (pg.length ? `<div class="gh">Proveedores · no es deuda mala</div><div class="group ic">${pg.map(provGroupRow).join('')}</div>
+      <p class="gf">Compras a crédito que se cancelan con la venta (match). No suman a la deuda total ni mueven tu fecha de libertad.</p>` : '');
+}
+
 function vBatalla() {
   const ord = attackOrder(), k = ym(today()), dead = S.loans.filter(l => loanSaldo(l) <= 0);
+  const sinEnt = S.loans.filter(l => loanSaldo(l) > 0 && !entOf(l)).length + S.cards.filter(c => !entOf(c)).length;
   const why = ord.mode === 'tae'
     ? 'Orden por <b>tasa (TAE) de mayor a menor</b>: método avalancha, el que menos intereses te cobra en total.'
     : 'Faltan TAE, así que el orden es por <b>flujo liberado</b>: primero el que te devuelve más cuota mensual por cada guaraní que pagás. Cargá las TAE en el detalle de cada préstamo y el orden se recalcula solo.';
   const months = Array.from({ length: 12 }, (_, i) => addMonth(k, i));
   const vals = months.map(m => sum(S.loans, l => sum(l.cuotas.filter(c => !c.paid && ym(c.d) === m), c => c.a)));
   const mx = Math.max(1, ...vals);
+  const hasDebt = S.loans.length || S.cards.length;
   return `${lt('Batalla', `${ord.list.length} ${ord.list.length === 1 ? 'jefe vivo' : 'jefes vivos'}`, `<button class="icbtn" data-act="addDebt" aria-label="Agregar deuda">${sym('plus')}</button>`)}
+  ${sinEnt ? `<div class="group ic" style="margin-bottom:12px">${cellLink('entFill', 'bank', 'blue', '¿A quién le debés?', `Poné la entidad de ${sinEnt === 1 ? '1 deuda' : sinEnt + ' deudas'} para ir sacándolas de a una`)}</div>` : ''}
   <div class="g2">
-    ${tile({ k: 'Deuda total', icon: 'flame', color: 'red', value: gsK(totalDebt()), foot: pctFree().toFixed(1) + '% eliminado' })}
+    ${tile({ k: 'Deuda total', icon: 'flame', color: 'red', value: gsK(totalDebt()), foot: pctFree().toFixed(1) + '% eliminado' + (provDebt() ? ' · + ' + gsK(provDebt()) + ' prov.' : '') })}
     ${tile({ k: 'Libre en', icon: 'calendar', color: 'green', value: cap(MESES_L[+projection().slice(5) - 1]), unit: projection().slice(0, 4), foot: 'sin plan: ' + ymLabel(noPlanEnd()) })}
   </div>
+  ${hasDebt ? sh('Cómo baja tu deuda') + debtCard() : ''}
+  ${entSection()}
   ${roadmap()}
   ${S.cards.length ? sh('Tarjetas') + S.cards.map(cardBoss).join('') : ''}
   ${ord.list.length ? sh('Orden de ataque') + `<p class="gf" style="margin:-2px 2px 12px">${why}</p>` + ord.list.map((l, i) => bossCard(l, i === 0)).join('') : ''}
@@ -780,13 +996,31 @@ function vBatalla() {
    Pantalla: Negocio
    ========================================================================= */
 const LADDER = [[1e6, 'Freelancer'], [2.5e6, 'Emprendedor'], [5e6, 'Negocio'], [10e6, 'Empresa'], [20e6, 'Imperio']];
+function payRow(p) {
+  const pend = payPend(p), paid = pend <= 0, v = p.venta && M.find(m => m.id === p.venta);
+  const sub = [esc(p.desc || 'Compra'), dLabel(p.date)];
+  if (paid) sub.push(p.pagos.some(x => x.venta) ? 'match con la venta' : 'pagado');
+  else if (v) sub.push('vinculada a una venta');
+  else if (p.venc) sub.push('vence ' + dLabel(p.venc));
+  return `<button class="cell" data-act="payable" data-id="${p.id}">${icoBox(paid ? 'check' : 'box', paid ? 'green' : 'indigo')}<div class="tx"><div class="t">${esc(p.prov)}</div><div class="s">${sub.join(' · ')}</div></div>
+    <div class="v">${paid ? `<span class="pill" style="--c:var(--green)">${sym('check')}Pagado</span>` : `<span class="num">${gsK(pend)}</span><small>a pagar</small>`}</div>${CHEV}</button>`;
+}
+function provSection() {
+  const pend = pendPayables().sort((a, b) => (a.venc || a.date || '').localeCompare(b.venc || b.date || ''));
+  const paid = S.payables.filter(p => payPend(p) <= 0).sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 5);
+  const list = pend.concat(paid);
+  return sh('Proveedores', '<button class="link" data-act="newPayable">Compra a crédito</button>') + (list.length
+    ? `<div class="group ic">${list.map(payRow).join('')}</div>
+      <p class="gf">${pend.length ? `Le debés <b>${gs(provDebt())}</b> a proveedores. ` : 'Estás al día con tus proveedores. '}Cuando cobrás una venta con el costo "Al proveedor", elegí la deuda y se cancela sola (match).</p>`
+    : `<div class="card"><p class="why">¿Un proveedor te dio mercadería a crédito? Cargala como <b>compra a crédito</b>. Cuando cobrás la venta, la elegís y la deuda se cancela sola.</p><button class="btn sm mt" data-act="newPayable">Agregar compra a crédito</button></div>`);
+}
 function vNegocio() {
   const k = ym(today()), st = S.settings, mes = MESES_L[+k.slice(5) - 1];
   const ventas = inMonth(k, ['venta']);
   const fact = sum(ventas, m => m.amt), gan = sum(ventas, ganancia), cofre = sum(ventas, m => m.toCofre);
   const meta = st.metaFacturacion || 1, pc = fact / meta * 100;
   const iva = ivaMonth(k), best = Math.max(bestMonthFact(), fact), caja = goal('emprender');
-  const last = M.filter(m => m.t === 'venta' || (m.t === 'gasto' && m.ambito === 'negocio')).sort(byDateDesc).slice(0, 8);
+  const last = M.filter(m => m.t === 'venta' || m.t === 'pagoprov' || (m.t === 'gasto' && m.ambito === 'negocio')).sort(byDateDesc).slice(0, 8);
   return `${lt('Negocio', 'Emprender full', `<button class="icbtn" data-act="add" data-t="venta" aria-label="Nueva venta">${sym('plus')}</button>`)}
   <div class="card">
     <div class="row between"><div class="k-head" style="color:var(--green)">${sym('chart')}Facturación de ${mes}</div>${pc >= 100 ? '<span class="pill" style="--c:var(--green)">Meta cumplida</span>' : ''}</div>
@@ -806,6 +1040,7 @@ function vNegocio() {
     ${tile({ k: 'Caja del negocio', icon: 'briefcase', color: 'indigo', value: fmt(caja.saved), vcolor: caja.saved < 0 ? 'var(--red)' : '', foot: 'capital para comprar', act: 'goal', id: 'emprender' })}
     ${tile({ k: 'Sobre IVA', icon: 'receipt', color: 'gray', value: fmt(S.funds.iva), foot: 'no es tuyo: es del fisco' })}
   </div>
+  ${provSection()}
   ${sh('IVA de ' + mes)}
   <div class="group">
     <div class="cell"><div class="tx"><div class="t">IVA débito</div><div class="s">De tus ventas</div></div><div class="v num">${gs(iva.deb)}</div></div>
@@ -946,23 +1181,25 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.1.1</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.2.0</p>`;
 }
 
 /* =========================================================================
    Hoja: registrar movimiento
    ========================================================================= */
-let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'proveedor', tipo: 'extra', touched: false, pct: null, d: {} };
-function openAdd(t) {
+let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'proveedor', pay: 'new', provPaid: 'si', tipo: 'extra', touched: false, pct: null, d: {} };
+function openAdd(t, o = {}) {
   if (t) REG.t = t;
-  REG.touched = false; REG.pct = null; REG.d = { date: today() };
+  REG.touched = false; REG.pct = null; REG.d = { date: today() }; REG.pay = 'new'; REG.provPaid = 'si';
   if (!S.cards.find(c => c.id === REG.card)) REG.card = S.cards[0] ? S.cards[0].id : '';
   if (!S.budget.find(b => b.id === REG.cat && b.id !== 'cuotas')) REG.cat = (S.budget.find(b => b.id !== 'cuotas') || {}).id;
+  const p = o.pay && payable(o.pay);
+  if (p) { REG.t = 'venta'; REG.costoA = 'proveedor'; REG.pay = p.id; REG.ivaC = p.iva || 'none'; REG.d.costo = fmt(payPend(p)); }
   openSheet(addHtml()); mountAdd();
 }
 function saveDraft() {
   const v = id => { const e = $('#' + id); return e ? e.value : undefined; };
-  const d = { amt: v('fAmt'), date: v('fDate'), note: v('fNote'), cli: v('fCli'), costo: v('fCosto') };
+  const d = { amt: v('fAmt'), date: v('fDate'), note: v('fNote'), cli: v('fCli'), costo: v('fCosto'), prov: v('fProv') };
   $$('#sheet [data-split]').forEach(i => { d[i.id] = i.value; });
   const p = $('#fPct'); if (p) REG.pct = +p.value;
   REG.d = d;
@@ -1018,6 +1255,7 @@ function addHtml() {
       caja: '<b>Vuelve a la caja:</b> la compra salió de la caja del negocio; el costo vuelve ahí para comprar el próximo producto.',
       bolsillo: '<b>Vuelve a mí:</b> la compraste con tu plata personal y la recuperás.'
     }[REG.costoA] || ''}</p>
+    ${REG.costoA === 'proveedor' ? provBlock() : ''}
     <div class="gh">De la ganancia, al cofre de deuda: <b id="pctL">${pct}%</b></div>
     <div class="card" style="padding:12px 16px"><input id="fPct" type="range" min="0" max="100" step="5" value="${pct}" aria-label="Porcentaje al cofre"></div>
     <div class="group mt" id="ventaPrev"></div>`;
@@ -1031,6 +1269,16 @@ function addHtml() {
     ${field('Nota', `<input id="fNote" placeholder="Opcional" value="${esc(d.note || '')}">`)}
   </div>
   <button class="btn p w mt2" data-act="saveAdd">Guardar ${t === 'gasto' ? 'gasto' : t === 'ingreso' ? 'ingreso' : 'venta'}</button>`;
+}
+// Venta: a qué proveedor le pagás el costo (match con su deuda)
+function provBlock() {
+  const pend = pendPayables(), d = REG.d, sel = REG.pay !== 'new' ? payable(REG.pay) : null;
+  return `<div class="gh">Proveedor</div>
+    ${pend.length ? `<div class="chips">${pend.map(p => regChip('pay', p.id, p.prov + ' · ' + gsK(payPend(p)), 'box', 'indigo', REG.pay === p.id)).join('')}${regChip('pay', 'new', 'Otro', 'plus', 'gray', !sel)}</div>` : ''}
+    ${sel ? `<p class="gf">${esc(sel.desc || 'Compra')} del ${dLabel(sel.date)} · le debés ${gs(payPend(sel))}. Con esta venta se hace el match.</p>`
+      : `<div class="group${pend.length ? ' mt' : ''}">${field('Proveedor', `<input id="fProv" list="dlProv" placeholder="Ej: Distribuidora S.A" autocomplete="off" value="${esc(d.prov || '')}">`)}</div>${dlist('dlProv', knownProvs())}`}
+    <div class="seg mt">${segBtns('reg', 'provPaid', [['si', 'Ya le pagué'], ['no', 'Le pago después']], REG.provPaid)}</div>
+    <p class="gf">${REG.provPaid === 'si' ? 'La deuda con el proveedor queda cancelada con esta venta.' : 'La deuda queda pendiente y vinculada a esta venta. Cuando le pagues, marcala en Negocio → Proveedores.'}</p>`;
 }
 function mountAdd(focus = true) {
   addLive();
@@ -1107,8 +1355,17 @@ function saveAdd() {
       costoA: REG.costoA, costoRet: REG.costoA === 'caja' ? costo : 0, ivaRes: S.settings.ivaAuto ? v.ivaPagar : 0,
       neto: v.neto, ganancia: v.gan, toCofre: v.cofre, toEmp: v.emp, pct: p
     });
+    // Match con la deuda del proveedor (una existente o una nueva con el nombre que escribiste)
+    if (REG.costoA === 'proveedor' && costo) {
+      let pv = REG.pay !== 'new' ? payable(REG.pay) : null, isNew = false;
+      if (!pv) {
+        const name = (($('#fProv') || {}).value || '').trim();
+        if (name) { pv = { id: uid(), prov: name, desc: note || m.cliente || 'Compra', amt: costo, iva: m.ivaC, date, venc: '', venta: null, pagos: [] }; S.payables.push(pv); isNew = true; }
+      }
+      if (pv) Object.assign(m, { payable: pv.id, prov: pv.prov, payNew: isNew, provPaid: REG.provPaid === 'si', payAmt: isNew ? costo : Math.min(costo, payPend(pv)) });
+    }
     S.settings.pctVenta = p; applyMov(m); addXP(30); confetti();
-    msg = '¡Venta! Ganancia ' + gsK(v.gan) + ' · +' + gsK(v.cofre) + ' al cofre';
+    msg = '¡Venta! Ganancia ' + gsK(v.gan) + ' · +' + gsK(v.cofre) + ' al cofre' + (m.payable ? (m.provPaid ? ' · ' + m.prov + ' pagado' : ' · ' + m.prov + ' pendiente') : '');
   }
   M.push(m); checkin(); toast(msg); haptic(12); checkAch();
   commit({ add: [m] }); closeSheet(); render();
@@ -1130,8 +1387,11 @@ function movDetail(id) {
     rows.push(['IVA venta ' + (m.iva === 'ex' ? 'exento' : m.iva + '%'), gs(m.ivaAmt)]);
     if (m.ivaCosto) rows.push(['IVA compra (crédito)', '− ' + gs(m.ivaCosto)]);
     rows.push(['IVA a pagar', gs((m.ivaAmt || 0) - (m.ivaCosto || 0))], ['Ganancia real', gs(ganancia(m))], ['Al cofre', gs(m.toCofre)], ['A la caja', gs(m.toEmp)]);
-    if (m.costo) rows.push({ proveedor: ['Pagado al proveedor', gs(m.costo)], caja: ['Costo recuperado', gs(m.costo) + ' → caja'] }[m.costoA] || ['Costo recuperado', gs(m.costo) + ' → vos']);
+    if (m.costo) rows.push({ proveedor: [m.provPaid === false ? 'A pagar al proveedor' : 'Pagado al proveedor', gs(m.costo)], caja: ['Costo recuperado', gs(m.costo) + ' → caja'] }[m.costoA] || ['Costo recuperado', gs(m.costo) + ' → vos']);
+    const pv = m.payable && payable(m.payable);
+    if (pv) rows.push(['Proveedor', `<button class="link" data-act="payable" data-id="${pv.id}">${esc(pv.prov)} · ${payPend(pv) > 0 ? 'pendiente' : 'pagado'}</button>`]);
   }
+  if (m.t === 'pagoprov') rows.push(['Sale de', { venta: 'Una venta (ya separado)', caja: 'Caja del negocio', personal: 'Tu bolsillo' }[m.src] || '—']);
   if (m.t === 'precancel' && m.ahorro) rows.push(['Ahorro en intereses', gs(m.ahorro)]);
   if (m.note) rows.push(['Nota', esc(m.note)]);
   openSheet(`${head('Detalle')}
@@ -1139,6 +1399,8 @@ function movDetail(id) {
       <div class="mt" style="font-size:17px;font-weight:600">${esc(mm.title)}</div>
       ${m.t === 'cero' ? '' : big((mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt) + '<span class="u">Gs</span>', mm.sign > 0 ? 'pos' : '')}</div>
     <div class="group">${rows.map(r => `<div class="cell"><div class="tx s2">${r[0]}</div><div class="v">${r[1]}</div></div>`).join('')}</div>
+    ${m.t === 'venta' && m.costo && (m.costoA || 'proveedor') === 'proveedor' && !(m.payable && payable(m.payable))
+      ? `<button class="btn p w mt2" style="--c:var(--indigo)" data-act="assignProv" data-id="${m.id}">${sym('box')}Asignar proveedor y hacer el match</button>` : ''}
     <button class="btn w mt2" style="--c:var(--red)" data-act="delMov" data-id="${m.id}">Eliminar movimiento</button>
     <p class="gf center">Se revierte su efecto en cofre, metas, tarjeta y cronograma.</p>`);
 }
@@ -1151,7 +1413,7 @@ function delMov(id) {
 /* =========================================================================
    Hojas: préstamos y tarjetas
    ========================================================================= */
-const bossHead = (l, sub) => `<div class="center" style="padding:4px 0 14px"><span class="ico xl" style="--c:var(--${l.color});margin:0 auto">${sym('bank')}</span><div style="font-weight:600;margin-top:10px">${esc(l.name)}</div><small>${sub}</small></div>`;
+const bossHead = (l, sub) => `<div class="center" style="padding:4px 0 14px"><span class="ico xl" style="--c:var(--${l.color});margin:0 auto">${sym('bank')}</span><div style="font-weight:600;margin-top:10px">${esc(l.name)}</div><small>${entOf(l) ? esc(entOf(l)) + ' · ' : ''}${sub}</small></div>`;
 function payCuotaSheet(id) {
   const l = loan(id), c = nextCuota(l); if (!c) return;
   openSheet(`${head('Pagar cuota')}${bossHead(l, 'Cuota ' + c.n + ' · vence ' + dLabel(c.d))}
@@ -1216,7 +1478,9 @@ function loanDetail(id) {
   openSheet(`${head(esc(l.name), `<button class="link" data-act="editLoan" data-id="${l.id}">Editar</button>`)}
     <div class="center" style="padding:4px 0 14px"><span class="ico xl" style="--c:var(--${dead ? 'gray' : l.color});margin:0 auto">${sym(dead ? 'check' : 'bank')}</span>${big(fmt(s) + '<span class="u">Gs</span>')}<small>${dead ? 'Derrotado' : 'vida restante'}</small></div>
     <div class="group">
+      <button class="cell" data-act="editLoan" data-id="${l.id}"><div class="tx s2">Entidad</div><div class="v">${entOf(l) ? esc(entOf(l)) : '<span style="color:var(--blue)">Agregar</span>'}</div>${CHEV}</button>
       <div class="cell"><div class="tx s2">Cuota</div><div class="v num">${gs(l.cuota)}</div></div>
+      ${dead ? '' : `<div class="cell"><div class="tx s2">Cae según la hoja de ruta</div><div class="v">${ymLabel(loanFreeMonth(l.id))}</div></div>`}
       <div class="cell"><div class="tx s2">Cuotas que faltan</div><div class="v">${l.cuotas.filter(c => !c.paid).length} de ${l.cuotas.length}</div></div>
       <div class="cell"><div class="tx s2">Termina</div><div class="v">${dLabel(lastDate(l))}</div></div>
       <div class="cell"><div class="tx s2">TAE</div><div class="v">${l.tae ? esc(l.tae) + '%' : '<span class="s2">sin dato</span>'}</div></div>
@@ -1232,13 +1496,15 @@ function loanForm(id) {
   const l = id ? loan(id) : null, color = l ? l.color : ['red', 'orange', 'purple', 'pink', 'indigo', 'teal'][S.loans.length % 6];
   openSheet(`${head(l ? 'Editar deuda' : 'Nuevo préstamo', `<button class="link b" data-act="saveLoan" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
     <div class="group">
-      ${field('Nombre', `<input id="lName" placeholder="Ej: Préstamo banco" value="${esc(l ? l.name : '')}">`)}
+      ${field('Entidad', `<input id="lEnt" list="dlEnt" placeholder="Banco o financiera" autocomplete="off" value="${esc(l ? entOf(l) : '')}">`)}
+      ${field('Nombre', `<input id="lName" placeholder="Ej: Préstamo de consumo" value="${esc(l ? l.name : '')}">`)}
       ${field('TAE %', `<input id="lTae" inputmode="decimal" placeholder="Opcional" value="${esc(l ? l.tae : '')}">`)}
       ${l ? '' : `${field('Cuota mensual', money('lCuota'))}
       ${field('Cuotas que faltan', '<input id="lN" inputmode="numeric" placeholder="Ej: 12">')}
       ${field('Nº próxima cuota', '<input id="lStart" inputmode="numeric" value="1">')}
       ${field('Vence la próxima', `<input id="lDate" type="date" value="${today()}">`)}`}
     </div>
+    ${dlist('dlEnt', entOptions())}
     <div class="gh">Color</div>
     <div class="card" style="padding:14px">${colorPicker('lColor', color)}</div>
     <p class="gf">${l ? 'Para corregir montos o fechas, tocá cada cuota en el cronograma.' : 'La TAE la pedís al banco: con ella, el orden de ataque usa el método avalancha (el más barato).'}</p>`);
@@ -1250,12 +1516,12 @@ function genSchedule(first, n, startN, amt) {
 }
 function saveLoan(id) {
   const name = $('#lName').value.trim(); if (!name) return toast('Poné un nombre');
-  const tae = $('#lTae').value.trim(), color = $('#lColor').value;
-  if (id) Object.assign(loan(id), { name, tae, color });
+  const tae = $('#lTae').value.trim(), color = $('#lColor').value, entidad = $('#lEnt').value.trim();
+  if (id) Object.assign(loan(id), { name, tae, color, entidad });
   else {
     const amt = parseN($('#lCuota').value), n = parseN($('#lN').value), start = parseN($('#lStart').value) || 1, date = $('#lDate').value;
     if (!amt || !n || !date) return toast('Completá cuota, cantidad y fecha');
-    const l = { id: uid(), name, tae, color, cuota: amt, cuotas: genSchedule(date, Math.min(n, 120), start, amt) };
+    const l = { id: uid(), name, entidad, tae, color, cuota: amt, cuotas: genSchedule(date, Math.min(n, 120), start, amt) };
     S.loans.push(l); S.initialTotal += loanSaldo(l); S.baseCuotas += amt; addXP(10);
   }
   commit(); closeSheet(); render(); toast(id ? 'Deuda actualizada' : 'Nuevo jefe: ' + name);
@@ -1292,6 +1558,7 @@ function cardForm(id) {
   openSheet(`${head(c ? 'Actualizar tarjeta' : 'Nueva tarjeta', `<button class="link b" data-act="saveCard" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
     <p class="gf" style="margin:0 4px 10px">Copiá los datos de la app del banco.</p>
     <div class="group">
+      ${field('Banco emisor', `<input id="cEnt" list="dlEnt" placeholder="Ej: Banco…" autocomplete="off" value="${esc(c ? entOf(c) : '')}">`)}
       ${field('Nombre', `<input id="cN" placeholder="Ej: Mastercard" value="${esc(c ? c.name : '')}">`)}
       ${field('Deuda total actual', money('cS', c ? c.saldo : ''))}
       ${field('Línea de crédito', money('cL', c ? c.linea : ''))}
@@ -1303,10 +1570,11 @@ function cardForm(id) {
       ${field('Pago mínimo', money('cM', c ? c.minimo : ''))}
       ${field('Vencimiento', `<input id="cV" type="date" value="${esc(c ? c.vence : '')}">`)}
     </div>
+    ${dlist('dlEnt', entOptions())}
     ${c ? `<button class="btn w mt2" style="--c:var(--red)" data-act="delCard" data-id="${c.id}">Eliminar tarjeta</button>` : ''}`);
 }
 function saveCard(id) {
-  const v = { name: $('#cN').value.trim() || 'Tarjeta', saldo: parseN($('#cS').value), linea: parseN($('#cL').value), tan: $('#cT').value.trim(), extracto: parseN($('#cE').value), minimo: parseN($('#cM').value), vence: $('#cV').value };
+  const v = { name: $('#cN').value.trim() || 'Tarjeta', entidad: $('#cEnt').value.trim(), saldo: parseN($('#cS').value), linea: parseN($('#cL').value), tan: $('#cT').value.trim(), extracto: parseN($('#cE').value), minimo: parseN($('#cM').value), vence: $('#cV').value };
   if (id) Object.assign(card(id), v);
   else { S.cards.push(Object.assign({ id: uid() }, v)); S.initialTotal += v.saldo; addXP(10); }
   commit(); closeSheet(); render(); toast(id ? 'Tarjeta actualizada' : 'Tarjeta agregada');
@@ -1326,6 +1594,164 @@ function doPayCard(id) {
   const full = amt >= c.extracto; M.push(m); addXP(full ? 40 : 10); checkin();
   if (full) { c.extracto = 0; unlock('tc'); toast('Extracto pagado completo'); } else toast('Pagaste menos que el total: habrá intereses sobre ' + gs(c.extracto - amt));
   checkAch(); commit({ add: [m] }); closeSheet(); render();
+}
+
+/* =========================================================================
+   Hojas: entidades (a quién le debés)
+   ========================================================================= */
+function entFillSheet() {
+  const items = S.loans.filter(l => loanSaldo(l) > 0).map(l => ({ k: 'l:' + l.id, name: l.name, sub: gsK(loanSaldo(l)) + ' · ' + l.cuotas.filter(c => !c.paid).length + ' cuotas', ent: entOf(l) }))
+    .concat(S.cards.map(c => ({ k: 'c:' + c.id, name: c.name, sub: 'Tarjeta · ' + gsK(c.saldo), ent: entOf(c) })));
+  openSheet(`${head('¿A quién le debés?', '<button class="link b" data-act="saveEntFill">Guardar</button>', '<button class="link" data-act="close">Cancelar</button>')}
+    <p class="gf" style="margin:0 4px 12px">Escribí el banco, financiera o persona de cada deuda. Si dos deudas son de la misma entidad, escribila igual y se agrupan.</p>
+    <div class="group">${items.map(x => `<label class="cell fieldc entf"><span><span class="t">${esc(x.name)}</span><small>${x.sub}</small></span><input data-ent-id="${x.k}" list="dlEnt" placeholder="Entidad" autocomplete="off" value="${esc(x.ent)}"></label>`).join('')}</div>
+    ${dlist('dlEnt', entOptions())}
+    <button class="btn p w mt2" data-act="saveEntFill">Guardar</button>`);
+}
+function saveEntFill() {
+  $$('#sheet [data-ent-id]').forEach(i => { const [k, id] = i.dataset.entId.split(':'); const o = k === 'l' ? loan(id) : card(id); if (o) o.entidad = i.value.trim(); });
+  commit(); closeSheet(); render(); toast('Entidades guardadas');
+}
+function entSheet(name) {
+  const e = entityRows().find(x => x.name === name); if (!e) return;
+  if (!name) return entFillSheet();
+  const cf = cardFreeMonth();
+  openSheet(`${head(esc(name))}
+    <div class="center" style="padding:4px 0 14px">${icoBox(e.saldo > 0 ? (e.loans.length ? 'bank' : 'creditcard') : 'check', e.saldo > 0 ? (e.loans.length ? e.color : 'indigo') : 'green', 'xl')}${big(fmt(e.saldo) + '<span class="u">Gs</span>')}<small>${e.saldo > 0 ? 'le debés' + (e.free ? ' · te liberás en ' + ymLabel(e.free) : '') : 'Ya no le debés nada'}</small></div>
+    ${e.pct != null ? bar(e.pct, 'lg', 'var(--green)') + `<p class="gf center">${e.pct.toFixed(0)}% pagado de sus préstamos</p>` : ''}
+    <div class="gh">Deudas</div>
+    <div class="group ic">${e.loans.map(l => { const s = loanSaldo(l); return `<button class="cell" data-act="loanDetail" data-id="${l.id}">${icoBox(s > 0 ? 'bank' : 'check', s > 0 ? l.color : 'gray')}<div class="tx"><div class="t">${esc(l.name)}</div><div class="s">${s > 0 ? l.cuotas.filter(c => !c.paid).length + ' cuotas · cae en ' + ymLabel(loanFreeMonth(l.id)) : 'Pagado'}</div></div><div class="v num">${gsK(s)}</div>${CHEV}</button>`; }).join('')}
+      ${e.cards.map(c => `<button class="cell" data-act="editCard" data-id="${c.id}">${icoBox('creditcard', 'indigo')}<div class="tx"><div class="t">${esc(c.name)}</div><div class="s">Tarjeta${c.saldo > 0 && cf ? ' · saldada en ' + ymLabel(cf) : ''}</div></div><div class="v num">${gsK(c.saldo)}</div>${CHEV}</button>`).join('')}</div>
+    <div class="gh">Nombre de la entidad</div>
+    <div class="group">${field('Nombre', `<input id="entName" list="dlEnt" autocomplete="off" value="${esc(name)}">`)}</div>${dlist('dlEnt', entOptions())}
+    <button class="btn w mt" data-act="renameEnt" data-ent="${esc(name)}">Renombrar en todas sus deudas</button>`);
+}
+function renameEnt(old) {
+  const nu = $('#entName').value.trim(); if (!nu || nu === old) return closeSheet();
+  S.loans.concat(S.cards).forEach(x => { if (entOf(x) === old) x.entidad = nu; });
+  commit(); closeSheet(); render(); toast('Entidad renombrada');
+}
+
+/* =========================================================================
+   Hojas: proveedores (compras a crédito) y el match con las ventas
+   ========================================================================= */
+const ventaName = m => 'Venta' + (m.cliente ? ' · ' + m.cliente : '') + ' (' + gsK(m.amt) + ')';
+function provSheet(prov) {
+  const ps = S.payables.filter(p => p.prov === prov).sort((a, b) => payPend(b) - payPend(a) || (b.date || '').localeCompare(a.date || ''));
+  if (!ps.length) return;
+  const pend = sum(ps, payPend);
+  openSheet(`${head(esc(prov))}
+    <div class="center" style="padding:4px 0 14px">${icoBox(pend > 0 ? 'box' : 'check', pend > 0 ? 'indigo' : 'green', 'xl')}${big(fmt(pend) + '<span class="u">Gs</span>')}<small>${pend > 0 ? 'a pagar' : 'Al día: todas sus compras están pagadas'}</small></div>
+    <div class="group ic">${ps.map(payRow).join('')}</div>
+    <button class="btn w mt2" data-act="newPayable" data-prov="${esc(prov)}">${sym('plus')}Nueva compra a crédito</button>`);
+}
+function payableSheet(id) {
+  const p = payable(id); if (!p) return closeSheet();
+  const pend = payPend(p), v = p.venta && M.find(m => m.id === p.venta);
+  const rows = [['Qué compraste', esc(p.desc || '—')], ['Fecha de compra', dLabel(p.date)], ['Monto', gs(p.amt)]];
+  if (ivaOf(p.amt, p.iva)) rows.push(['IVA ' + p.iva + '% (crédito fiscal)', gs(ivaOf(p.amt, p.iva))]);
+  if (p.venc) rows.push(['Vence', dLabel(p.venc)]);
+  if (v) rows.push(['Venta vinculada', `<button class="link" data-act="movDetail" data-id="${v.id}">${esc(ventaName(v))}</button>`]);
+  const SRC = { venta: 'con la plata de una venta', caja: 'desde la caja del negocio', personal: 'de tu bolsillo' };
+  const pagos = p.pagos.map(x => {
+    const vm = x.venta && M.find(m => m.id === x.venta), pm = x.mov && M.find(m => m.id === x.mov);
+    return `<div class="cell">${icoBox(x.venta ? 'link' : 'check', 'green')}<div class="tx"><div class="t">${x.venta ? 'Match con ' + esc(vm ? ventaName(vm) : 'la venta') : 'Pago ' + (SRC[(pm || {}).src] || '')}</div><div class="s">${dLabel(x.d)} · <span class="num">${gs(x.amt)}</span></div></div>
+      <button class="link" style="flex:none;font-size:15px" data-act="undoPago" data-id="${p.id}" data-pid="${x.id}">Deshacer</button></div>`;
+  }).join('');
+  openSheet(`${head(esc(p.prov), `<button class="link" data-act="editPayable" data-id="${p.id}">Editar</button>`)}
+    <div class="center" style="padding:4px 0 14px">${icoBox(pend > 0 ? 'box' : 'check', pend > 0 ? 'indigo' : 'green', 'xl')}${big(fmt(pend) + '<span class="u">Gs</span>')}<small>${pend > 0 ? 'a pagar al proveedor' : 'Pagado · deuda cancelada'}</small></div>
+    <div class="group">${rows.map(r => `<div class="cell"><div class="tx s2">${r[0]}</div><div class="v">${r[1]}</div></div>`).join('')}</div>
+    ${p.pagos.length ? `<div class="gh">Pagos y match</div><div class="group ic">${pagos}</div>` : ''}
+    ${pend > 0 ? `<div class="btns mt2">${v ? '' : `<button class="btn" style="--c:var(--indigo)" data-act="sellPayable" data-id="${p.id}">${sym('bag')}Cobrar con una venta</button>`}<button class="btn p" style="--c:var(--green)" data-act="payProv" data-id="${p.id}">${v ? 'Ya le pagué' : 'Registrar pago'}</button></div>
+      <p class="gf">${v ? 'La plata para pagarle salió de la venta vinculada.' : '<b>Cobrar con una venta:</b> registrás la venta y la deuda se cancela con ella (match).'}</p>` : ''}
+    ${p.pagos.length ? '' : `<button class="btn w mt2" style="--c:var(--red)" data-act="delPayable" data-id="${p.id}">Eliminar compra</button>`}`);
+}
+function payableForm(id, prov = '') {
+  const p = id ? payable(id) : null, iva = p ? p.iva || 'none' : '10';
+  openSheet(`${head(p ? 'Editar compra' : 'Compra a crédito', `<button class="link b" data-act="savePayable" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
+    <p class="gf" style="margin:0 4px 10px">Mercadería que un proveedor te dio para pagar después. Se cancela con la venta (match) o con un pago.</p>
+    <div class="group">
+      ${field('Proveedor', `<input id="pfP" list="dlProv" placeholder="Ej: Distribuidora S.A" autocomplete="off" value="${esc(p ? p.prov : prov)}">`)}
+      ${field('Qué compraste', `<input id="pfD" placeholder="Ej: Switch" value="${esc(p ? p.desc : '')}">`)}
+      ${field('Monto', money('pfA', p ? p.amt : ''))}
+      ${field('Fecha', `<input id="pfF" type="date" value="${esc(p ? p.date : today())}">`)}
+      ${field('Vence (opcional)', `<input id="pfV" type="date" value="${esc(p ? p.venc || '' : '')}">`)}
+    </div>${dlist('dlProv', knownProvs())}
+    <div class="gh">IVA de la compra</div><input type="hidden" id="pfI" value="${iva}">
+    <div class="seg">${[['10', '10%'], ['5', '5%'], ['ex', 'Exento'], ['none', 'Sin factura']].map(([v, l]) => `<button class="${v === iva ? 'on' : ''}" data-act="pick" data-target="pfI" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="gf">El IVA de la compra se descuenta del IVA de la venta cuando hacés el match.</p>`);
+}
+function savePayable(id) {
+  const v = { prov: $('#pfP').value.trim(), desc: $('#pfD').value.trim(), amt: parseN($('#pfA').value), date: $('#pfF').value || today(), venc: $('#pfV').value, iva: $('#pfI').value };
+  if (!v.prov || !v.amt) return toast('Completá proveedor y monto');
+  if (id) Object.assign(payable(id), v); else { S.payables.push(Object.assign({ id: uid(), venta: null, pagos: [] }, v)); addXP(5); }
+  commit(); render(); if (id) payableSheet(id); else closeSheet();
+  toast(id ? 'Compra actualizada' : 'Deuda con ' + v.prov + ' registrada');
+}
+function delPayable(id) {
+  const p = payable(id); if (!p) return;
+  if (p.pagos.length) return toast('Primero deshacé los pagos');
+  const linked = M.filter(m => m.payable === id);
+  linked.forEach(m => { ['payable', 'prov', 'provPaid', 'payNew', 'payAmt'].forEach(k => delete m[k]); });
+  S.payables = S.payables.filter(x => x.id !== id);
+  commit({ add: linked }); closeSheet(); render(); toast('Compra eliminada');
+}
+function payProvSheet(id) {
+  const p = payable(id), src = p.venta ? 'venta' : 'caja';
+  openSheet(`${head('Pagar a ' + esc(p.prov), `<button class="link b" data-act="doPayProv" data-id="${id}">Guardar</button>`, `<button class="link" data-act="payable" data-id="${id}">Atrás</button>`)}
+    <div class="group">${field('Monto pagado', money('ppA', payPend(p)))}${field('Fecha', `<input id="ppD" type="date" value="${today()}">`)}</div>
+    <div class="gh">¿De dónde sale la plata?</div>
+    <input type="hidden" id="ppS" value="${src}">
+    <div class="seg">${[['venta', 'De una venta'], ['caja', 'Caja del negocio'], ['personal', 'Mi bolsillo']].map(([v, l]) => `<button class="${v === src ? 'on' : ''}" data-act="pick" data-target="ppS" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="gf"><b>De una venta:</b> la plata ya la separaste al cobrar (no toca ningún fondo). <b>Caja del negocio:</b> se descuenta de la caja. <b>Mi bolsillo:</b> sale de tu plata personal.</p>`);
+}
+function doPayProv(id) {
+  const p = payable(id), amt = Math.min(parseN($('#ppA').value), payPend(p)); if (!amt) return toast('Ingresá un monto');
+  const m = { id: uid(), ts: Date.now(), date: $('#ppD').value || today(), amt, t: 'pagoprov', payable: p.id, prov: p.prov, src: $('#ppS').value, note: p.desc || '' };
+  applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] });
+  toast(payPend(p) <= 0 ? 'Deuda con ' + p.prov + ' cancelada' : 'Pago registrado · quedan ' + gs(payPend(p)));
+  payableSheet(id); render();
+}
+function undoPago(pid, xid) {
+  const p = payable(pid), x = p && p.pagos.find(y => y.id === xid); if (!x) return;
+  if (x.mov) {
+    const m = M.find(y => y.id === x.mov);
+    if (m) { revertMov(m); M = M.filter(y => y.id !== m.id); commit({ del: [m.id] }); } else { p.pagos = p.pagos.filter(y => y !== x); commit(); }
+  } else {
+    const m = M.find(y => y.id === x.venta);
+    p.pagos = p.pagos.filter(y => y !== x);
+    if (m) { m.provPaid = false; commit({ add: [m] }); } else commit();
+  }
+  toast('Listo: la deuda con ' + p.prov + ' vuelve a estar pendiente');
+  if (payable(pid)) payableSheet(pid); else closeSheet();
+  render();
+}
+// Ventas cargadas antes de esta función: asignarles el proveedor y hacer el match
+function assignProvSheet(id) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const pend = pendPayables();
+  openSheet(`${head('Proveedor de la venta', `<button class="link b" data-act="doAssignProv" data-id="${id}">Guardar</button>`, `<button class="link" data-act="movDetail" data-id="${id}">Atrás</button>`)}
+    <p class="gf" style="margin:0 4px 12px">${esc(ventaName(m))} · costo ${gs(m.costo)}. Queda registrado como deuda con el proveedor y se hace el match con esta venta.</p>
+    <input type="hidden" id="apPay" value="new">
+    ${pend.length ? `<div class="gh">Elegí una deuda pendiente…</div><div class="chips">${pend.map(p => `<button class="chip" data-act="pick" data-target="apPay" data-v="${p.id}" style="--c:var(--indigo)"><span class="chip-ic">${sym('box')}</span>${esc(p.prov)} · ${gsK(payPend(p))}</button>`).join('')}<button class="chip on" data-act="pick" data-target="apPay" data-v="new" style="--c:var(--gray)"><span class="chip-ic">${sym('plus')}</span>Nueva</button></div>
+      <div class="gh">…o una nueva</div>` : ''}
+    <div class="group">${field('Proveedor', `<input id="apProv" list="dlProv" placeholder="Ej: Distribuidora S.A" autocomplete="off">`)}${field('Qué compraste', `<input id="apD" placeholder="Ej: Switch" value="${esc(m.note || m.cliente || '')}">`)}</div>${dlist('dlProv', knownProvs())}
+    <div class="gh">¿Ya le pagaste?</div><input type="hidden" id="apPaid" value="si">
+    <div class="seg">${[['si', 'Sí, ya le pagué'], ['no', 'Le pago después']].map(([v, l]) => `<button class="${v === 'si' ? 'on' : ''}" data-act="pick" data-target="apPaid" data-v="${v}">${l}</button>`).join('')}</div>
+    <button class="btn p w mt2" style="--c:var(--indigo)" data-act="doAssignProv" data-id="${id}">Hacer el match</button>`);
+}
+function doAssignProv(id) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const sel = $('#apPay').value; let p = sel !== 'new' ? payable(sel) : null, isNew = false;
+  if (!p) {
+    const name = $('#apProv').value.trim(); if (!name) return toast('Escribí el nombre del proveedor');
+    p = { id: uid(), prov: name, desc: $('#apD').value.trim() || 'Compra', amt: m.costo, iva: m.ivaC || 'none', date: m.date, venc: '', venta: null, pagos: [] };
+    S.payables.push(p); isNew = true;
+  }
+  Object.assign(m, { payable: p.id, prov: p.prov, payNew: isNew, provPaid: $('#apPaid').value === 'si', payAmt: isNew ? m.costo : Math.min(m.costo, payPend(p)) });
+  linkPay(m); addXP(10); checkin(); commit({ add: [m] });
+  toast(m.provPaid ? 'Match hecho: deuda con ' + p.prov + ' cancelada' : 'Deuda con ' + p.prov + ' pendiente, vinculada a la venta');
+  payableSheet(p.id); render();
 }
 
 /* =========================================================================
@@ -1488,8 +1914,9 @@ function rulesSheet() {
 function promptText() {
   const st = S.settings, k = ym(today()), sm = monthSummary(k), iva = ivaMonth(k), ventas = inMonth(k, ['venta']);
   const cats = S.budget.map(b => `- ${b.name}: presupuesto ${fmt(budAmt(b))} | gastado este mes ${fmt(monthSpent(b.id, k))}`).join('\n');
-  const loans = S.loans.map(l => `- ${l.name}: saldo ${fmt(loanSaldo(l))} | cuota ${fmt(l.cuota)} | cuotas restantes ${l.cuotas.filter(c => !c.paid).length} | termina ${lastDate(l) || 'pagado'} | TAE ${l.tae || 'sin dato'}`).join('\n') || '- (sin préstamos)';
-  const cards = S.cards.map(c => `- ${c.name}: saldo ${fmt(c.saldo)} | línea ${fmt(c.linea)} | extracto ${fmt(c.extracto)} vence ${c.vence || '—'} | TAN ${c.tan || '—'}%`).join('\n') || '- (sin tarjetas)';
+  const loans = S.loans.map(l => `- ${debtName(l)}: saldo ${fmt(loanSaldo(l))} | cuota ${fmt(l.cuota)} | cuotas restantes ${l.cuotas.filter(c => !c.paid).length} | termina ${lastDate(l) || 'pagado'} | TAE ${l.tae || 'sin dato'}`).join('\n') || '- (sin préstamos)';
+  const provs = provGroups().filter(g => g.pend > 0).map(g => `- ${g.prov}: ${fmt(g.pend)} a pagar (${g.ps.filter(p => payPend(p) > 0).map(p => p.desc || 'compra').join(', ')})`).join('\n') || '- (al día)';
+  const cards = S.cards.map(c => `- ${entOf(c) ? entOf(c) + ' · ' : ''}${c.name}: saldo ${fmt(c.saldo)} | línea ${fmt(c.linea)} | extracto ${fmt(c.extracto)} vence ${c.vence || '—'} | TAN ${c.tan || '—'}%`).join('\n') || '- (sin tarjetas)';
   const goals = S.goals.map(g => `- ${g.name}: ${fmt(g.saved)} de ${fmt(g.target)}`).join('\n');
   return `Actuá como mi asesor financiero personal: prudente, orientado a riesgo, directo y sin relleno. No inventes tasas ni datos: si falta algo, pedímelo.
 
@@ -1506,6 +1933,8 @@ Tarjetas:
 ${cards}
 Préstamos:
 ${loans}
+Proveedores (compras a crédito, se pagan con las ventas; no es deuda con interés):
+${provs}
 Cofre: ${fmt(S.funds.cofre)} | Sobre IVA: ${fmt(S.funds.iva)}
 Metas:
 ${goals}
@@ -1629,6 +2058,7 @@ const ACT = {
     const { k, v } = d;
     if (k === 'cat') { REG.cat = v; $$('#sheet .chip[data-k=cat]').forEach(c => c.classList.toggle('on', c.dataset.v === v)); return; }
     if (k === 'amb') { REG.amb = v; REG.medio = v === 'negocio' ? 'caja' : 'debito'; REG.iva = v === 'negocio' ? '10' : 'none'; }
+    else if (k === 'pay') { REG.pay = v; const p = payable(v); if (p) { const ci = $('#fCosto'); if (ci) ci.value = fmt(payPend(p)); REG.ivaC = p.iva || 'none'; } }
     else REG[k] = v;
     if (k === 'tipo' || k === 't') REG.touched = false;
     rerenderAdd();
@@ -1653,6 +2083,14 @@ const ACT = {
   budget: d => budgetSheet(d.id), newBudget: () => budgetSheet(), saveBudget: d => saveBudget(d.id), delBudget: (d, el) => armed(el) && delBudget(d.id),
   goal: d => goalSheet(d.id), goalMove: d => goalMove(d.id, d.dir), saveGoal: d => saveGoalTarget(d.id),
   payIva: () => ivaSheet(), doPayIva: () => doPayIva(),
+  entFill: () => entFillSheet(), saveEntFill: () => saveEntFill(), entSheet: d => entSheet(d.ent || ''), renameEnt: d => renameEnt(d.ent),
+  provSheet: d => provSheet(d.prov), payable: d => payableSheet(d.id),
+  newPayable: d => payableForm(null, d.prov || ''), editPayable: d => payableForm(d.id), savePayable: d => savePayable(d.id),
+  delPayable: (d, el) => armed(el) && delPayable(d.id),
+  payProv: d => payProvSheet(d.id), doPayProv: d => doPayProv(d.id),
+  undoPago: (d, el) => armed(el) && undoPago(d.id, d.pid),
+  sellPayable: d => openAdd('venta', { pay: d.id }),
+  assignProv: d => assignProvSheet(d.id), doAssignProv: d => doAssignProv(d.id),
   moveFund: d => moveSheet(d.from, d.to), doMove: () => doMove(),
   settings: () => settingsSheet(), saveSettings: () => saveSettings(), theme: d => setTheme(d.v),
   account: () => accountSheet(), rules: () => rulesSheet(), prompt: () => promptSheet(), copyPrompt: () => copyPrompt(),
@@ -1685,7 +2123,20 @@ document.addEventListener('input', e => {
   if (t.matches && t.matches('input[data-money]')) { const n = parseN(t.value); t.value = n ? fmt(n) : ''; }
   if (t.closest && t.closest('#sheet') && $('#fAmt')) addLive(e);
 });
+// Gráfico de la deuda: cruz + tooltip con mouse, dedo o teclado
+document.addEventListener('pointermove', dchartPointer, { passive: true });
+document.addEventListener('pointerdown', dchartPointer, { passive: true });
+document.addEventListener('focusin', e => { if (e.target.closest && e.target.closest('.dchart') && DCH) dchartShow(DCH.today); });
+document.addEventListener('focusout', e => { if (e.target.closest && e.target.closest('.dchart')) dchartHide(); });
+let RSZ = 0, RW = window.innerWidth;
+window.addEventListener('resize', () => {
+  clearTimeout(RSZ);
+  RSZ = setTimeout(() => { if (window.innerWidth === RW) return; RW = window.innerWidth; if (APP_ON && TAB === 'batalla' && !sheetOpen()) render(); }, 250);
+});
 document.addEventListener('keydown', e => {
+  if (DCH && e.target.closest && e.target.closest('.dchart') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    e.preventDefault(); dchartShow(clamp((DCH.i < 0 ? DCH.today : DCH.i) + (e.key === 'ArrowRight' ? 1 : -1), 0, DCH.pts.length - 1)); return;
+  }
   if (e.key === 'Escape') closeSheet();
   if (e.key === 'Enter' && e.target.closest && e.target.closest('#loginForm')) { e.preventDefault(); doAuth('login'); }
 });
