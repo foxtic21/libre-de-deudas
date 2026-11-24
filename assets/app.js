@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.1.0';
+import * as Store from './store.js?v=2.1.1';
 
 /* =========================================================================
    Utilidades
@@ -821,7 +821,7 @@ function vNegocio() {
   ${sh('Plan comercial')}
   <div class="group steps">${[
     ['Una oferta, un precio', 'Empaquetá un producto o servicio concreto con precio cerrado.'],
-    ['El costo vuelve a la caja', 'Cuando vendés, lo que pagaste por el producto vuelve a la caja del negocio para comprar el siguiente. Solo la ganancia se reparte.'],
+    ['Solo se reparte la ganancia', 'De cada venta primero sale el costo (pago al proveedor o reposición de la caja) y el IVA neto. Lo que queda es ganancia: eso se reparte entre cofre y caja.'],
     ['10 contactos por semana', 'WhatsApp, LinkedIn, ex compañeros y referidos. Registrá cada venta acá.'],
     ['50% por adelantado', 'Y 50% contra entrega. Nunca financies a tu cliente.'],
     ['Factura siempre', 'Con factura de compra a tu RUC, el IVA que pagaste se descuenta del IVA de tu venta.'],
@@ -905,7 +905,7 @@ function stepsHtml() {
     libreBase >= 0 ? ['Lo que sobra del base → cofre', `Te quedan ${gs(libreBase)} del sueldo base: van al cofre o al colchón, no al aire.`]
       : ['El sueldo base no alcanza', `Fijos + sobres superan el base por ${gs(-libreBase)}. Recortá sobres para no depender de las horas extra.`],
     ['Horas extra = munición', `${gs(st.ataqueMensual)}/mes al cofre${tgt ? ' → atacá a <b>' + esc(tgt.name) + '</b>' : ''}. Si un mes no hay extras, tu vida no se cae: solo atacás más lento.`],
-    ['Cada venta', `El costo vuelve a la caja del negocio, el IVA (venta menos compra) va a su sobre y de la ganancia, ${st.pctVenta}% al cofre.`],
+    ['Cada venta', `Primero pagás al proveedor (el costo), el IVA (venta menos compra) va a su sobre y de la ganancia, ${st.pctVenta}% al cofre.`],
     ['Cuando cae un jefe', 'Su cuota NO se gasta: se suma al ataque del siguiente. El monto mensual para deudas queda fijo hasta ser libre.'],
     ['Cuando seas libre', `Los ${gs(debtBudget())}/mes que hoy van a deudas se reparten: 40% colchón de 6 meses e inversión · 30% viajes · 30% negocio.`]
   ].map(([t, p]) => `<div class="step"><span class="nb"></span><div><b>${t}</b><p>${p}</p></div></div>`).join('');
@@ -946,13 +946,13 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.1</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.1.1</p>`;
 }
 
 /* =========================================================================
    Hoja: registrar movimiento
    ========================================================================= */
-let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'caja', tipo: 'extra', touched: false, pct: null, d: {} };
+let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: '', iva: 'none', ivaV: '10', ivaC: '10', costoA: 'proveedor', tipo: 'extra', touched: false, pct: null, d: {} };
 function openAdd(t) {
   if (t) REG.t = t;
   REG.touched = false; REG.pct = null; REG.d = { date: today() };
@@ -1011,9 +1011,13 @@ function addHtml() {
     <div class="group">${field('Costo del producto', `<input id="fCosto" data-money inputmode="numeric" placeholder="0" value="${esc(d.costo || '')}">`)}</div>
     <div class="gh">IVA de la compra</div>
     <div class="seg">${segBtns('reg', 'ivaC', [['10', '10%'], ['5', '5%'], ['ex', 'Exento'], ['none', 'Sin factura']], REG.ivaC)}</div>
-    <div class="gh">El costo vuelve a</div>
-    <div class="seg">${segBtns('reg', 'costoA', [['caja', 'Caja del negocio'], ['bolsillo', 'Mi bolsillo']], REG.costoA)}</div>
-    <p class="gf">Caja del negocio: así ese dinero queda para comprar el próximo producto. Mi bolsillo: si lo compraste con tu plata personal y la querés de vuelta.</p>
+    <div class="gh">¿A dónde va el costo?</div>
+    <div class="seg">${segBtns('reg', 'costoA', [['proveedor', 'Al proveedor'], ['caja', 'A la caja'], ['bolsillo', 'A mí']], REG.costoA)}</div>
+    <p class="gf">${{
+      proveedor: '<b>Pago al proveedor:</b> te dio la mercadería a crédito y le pagás con la plata de esta venta. El costo sale y no vuelve a ningún fondo.',
+      caja: '<b>Vuelve a la caja:</b> la compra salió de la caja del negocio; el costo vuelve ahí para comprar el próximo producto.',
+      bolsillo: '<b>Vuelve a mí:</b> la compraste con tu plata personal y la recuperás.'
+    }[REG.costoA] || ''}</p>
     <div class="gh">De la ganancia, al cofre de deuda: <b id="pctL">${pct}%</b></div>
     <div class="card" style="padding:12px 16px"><input id="fPct" type="range" min="0" max="100" step="5" value="${pct}" aria-label="Porcentaje al cofre"></div>
     <div class="group mt" id="ventaPrev"></div>`;
@@ -1071,7 +1075,7 @@ function addLive(e) {
       row('Ganancia real' + (amt ? ` (${(v.gan / amt * 100).toFixed(0)}%)` : ''), `<b class="${v.gan < 0 ? 'neg' : 'pos'}">${gs(v.gan)}</b>`),
       row(`Al cofre de ataque (${p}%)`, `<b style="color:var(--orange)">${gs(v.cofre)}</b>`),
       row('A la caja del negocio', gs(v.emp)),
-      costo ? row(REG.costoA === 'caja' ? 'Costo recuperado → caja' : 'Costo recuperado → tu bolsillo', gs(costo)) : ''
+      costo ? row({ proveedor: 'Costo → pagado al proveedor', caja: 'Costo recuperado → caja', bolsillo: 'Costo recuperado → vos' }[REG.costoA], gs(costo)) : ''
     ].join('');
   }
 }
@@ -1126,7 +1130,7 @@ function movDetail(id) {
     rows.push(['IVA venta ' + (m.iva === 'ex' ? 'exento' : m.iva + '%'), gs(m.ivaAmt)]);
     if (m.ivaCosto) rows.push(['IVA compra (crédito)', '− ' + gs(m.ivaCosto)]);
     rows.push(['IVA a pagar', gs((m.ivaAmt || 0) - (m.ivaCosto || 0))], ['Ganancia real', gs(ganancia(m))], ['Al cofre', gs(m.toCofre)], ['A la caja', gs(m.toEmp)]);
-    if (m.costo) rows.push(['Costo recuperado', gs(m.costo) + (m.costoA === 'caja' ? ' → caja' : ' → bolsillo')]);
+    if (m.costo) rows.push({ proveedor: ['Pagado al proveedor', gs(m.costo)], caja: ['Costo recuperado', gs(m.costo) + ' → caja'] }[m.costoA] || ['Costo recuperado', gs(m.costo) + ' → vos']);
   }
   if (m.t === 'precancel' && m.ahorro) rows.push(['Ahorro en intereses', gs(m.ahorro)]);
   if (m.note) rows.push(['Nota', esc(m.note)]);
@@ -1493,7 +1497,7 @@ CONTEXTO
 - Vivo en Paraguay (Gs).${S.profile.contexto ? ' ' + S.profile.contexto.replace(/\.$/, '') + '.' : ''} Ingreso neto: sueldo base ${fmt(st.base)} + horas extra ~${fmt(st.extra)} (variable).
 - Estrategia: vivir con el sueldo base; horas extra, ganancia de ventas y sobrantes van a un "cofre de ataque" que paga por adelantado UNA deuda a la vez (primero la tarjeta, después el préstamo de mayor TAE; sin TAE, el que más cuota libera por guaraní). Cuota que termina se suma al ataque del siguiente (bola de nieve). Tarjeta: siempre pago total.
 - Monto mensual fijo para deudas: ${fmt(debtBudget())}.
-- Negocio de compraventa: en cada venta resto el costo del producto (vuelve a la caja del negocio) y el IVA neto (débito de la venta − crédito de la compra); de la ganancia, ${st.pctVenta}% va al cofre.
+- Negocio de compraventa: el proveedor me da la mercadería a crédito y le pago cuando cobro. En cada venta resto el costo y el IVA neto (débito de la venta − crédito de la compra); de la ganancia, ${st.pctVenta}% va al cofre.
 - Prioridades: 1) matar la deuda, 2) emprender y facturar (meta ${fmt(st.metaFacturacion)}/mes), 3) después, viajes (${S.goals.filter(g => g.kind === 'viaje').map(g => g.name).join(', ')}).
 
 DATOS AL ${today()}
