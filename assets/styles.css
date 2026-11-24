@@ -360,6 +360,31 @@ body.sheet-open{overflow:hidden}
 
 .center>.ico.xl{margin:0 auto}
 
+/* ---------- bloqueo con Face ID ---------- */
+#lock{position:fixed;inset:0;z-index:200;background:var(--bg);display:none}
+#lock.on{display:flex}
+#lock .lock-in{margin:auto;width:100%;max-width:380px;padding:calc(24px + var(--st)) 24px calc(24px + var(--sb));text-align:center}
+#lock h1{font-size:34px;font-weight:800;letter-spacing:-.01em}
+#lock .tag{font-size:16px;color:var(--label2);margin:6px 0 28px}
+body.locked{overflow:hidden}
+body.locked .dock,body.locked #app{visibility:hidden}
+
+/* ---------- sin internet ---------- */
+#net{position:fixed;left:50%;top:calc(8px + var(--st));transform:translate(-50%,-140%);z-index:60;display:flex;align-items:center;gap:7px;
+  padding:7px 14px;border-radius:99px;font-size:13px;font-weight:600;color:#fff;background:#3a3a3c;box-shadow:0 6px 20px rgba(0,0,0,.2);
+  transition:transform .3s;white-space:nowrap;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+#net.on{transform:translate(-50%,0)}
+#net svg.i{width:15px;height:15px;stroke-width:2.3;flex:none}
+
+/* ---------- plan del día de cobro ---------- */
+.cobrocard{display:flex;gap:12px;align-items:center;width:100%;border:0;text-align:left;font:inherit;color:inherit;cursor:pointer;margin-bottom:18px}
+.cobrocard .t{font-weight:600;margin-top:2px}
+.cobrocard small{display:block;margin-top:1px}
+.cobro{align-items:flex-start}
+.cobro .t{white-space:normal}
+.cobro .v{display:flex;flex-direction:column;align-items:flex-end}
+.nb2{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--fill2);font-size:12px;font-weight:700;margin-right:7px;vertical-align:1px}
+
 /* ---------- entidad (a quién le debés) ---------- */
 .eyebrow{display:block;font-size:12px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--label2);
   margin:0 0 1px;padding:0 104px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.4.0';
+import * as Store from './store.js?v=2.5.0';
 
 /* =========================================================================
    Utilidades
@@ -111,7 +111,10 @@ const P = {
   tag: '<path d="M3.5 12.5v-8a1 1 0 0 1 1-1h8l8.5 8.5-9 9z"/>' + dot(8, 8, 1.4),
   walk: '<circle cx="13" cy="4.5" r="1.8"/><path d="M10 21l2-6 2.5 2.5V21M8 12l1.5-4.5L13 8l2 3 3 1M9.5 7.5 6.5 9 5.5 12"/>',
   coins: '<ellipse cx="9" cy="7" rx="6" ry="3"/><path d="M3 7v4c0 1.7 2.7 3 6 3s6-1.3 6-3V7M9 14v3c0 1.7 2.7 3 6 3s6-1.3 6-3v-4c0-1.6-2.4-2.9-5.5-3"/>',
-  wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16.5" height="12" rx="2.5"/><circle cx="16" cy="14" r="1.3"/>'
+  wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16.5" height="12" rx="2.5"/><circle cx="16" cy="14" r="1.3"/>',
+  faceid: '<path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16M9 9v1.5M15 9v1.5M12 9v4h-1M9 15.5c1.8 1.4 4.2 1.4 6 0"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.6 15.8a5 5 0 0 1 6.8 0"/>' + dot(12, 19, 1.4),
+  pin: '<path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>'
 };
 const sym = (k, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[k] || P.tag}</svg>`;
 const CHEV = '<svg class="chev" viewBox="0 0 9 14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 7 7l-5.5 5.5"/></svg>';
@@ -122,13 +125,15 @@ const SYM_CHOICES = ['tag', 'cart', 'fork', 'car', 'heart', 'phone', 'house', 'g
    Modelo de datos
    ========================================================================= */
 const BUDGET_META = {
-  alquiler: { color: 'blue', tipo: 'nec', sym: 'house' }, cuotas: { color: 'red', tipo: 'deuda', sym: 'link' }, super: { color: 'green', tipo: 'nec', sym: 'cart' },
+  alquiler: { color: 'blue', tipo: 'nec', sym: 'house' }, servicios: { color: 'yellow', tipo: 'nec', sym: 'bolt' }, cuotas: { color: 'red', tipo: 'deuda', sym: 'link' }, super: { color: 'green', tipo: 'nec', sym: 'cart' },
   afuera: { color: 'orange', tipo: 'deseo', sym: 'fork' }, combustible: { color: 'purple', tipo: 'nec', sym: 'car' }, padel: { color: 'mint', tipo: 'deseo', sym: 'tennis' },
   personal: { color: 'pink', tipo: 'nec', sym: 'heart' }, digital: { color: 'cyan', tipo: 'deseo', sym: 'phone' }, otros: { color: 'gray', tipo: 'nec', sym: 'ellipsis' }
 };
 const GOAL_META = { colchon: { sym: 'shield', color: 'teal' }, emprender: { sym: 'briefcase', color: 'indigo' }, rio: { sym: 'sun', color: 'green' }, bariloche: { sym: 'mountain', color: 'blue' }, bsas: { sym: 'building', color: 'cyan' } };
+function SERVICIOS() { return { id: 'servicios', name: 'Servicios (luz, agua, internet, celular)', amt: 0, fijo: true, why: 'ANDE, agua, internet y plan de celular. Se pagan el día de cobro, junto con el alquiler: cortar la luz o el celular sale más caro.' }; }
 const DEFAULT_BUDGET = () => [
   { id: 'alquiler', name: 'Vivienda / alquiler', amt: 0, fijo: true, why: 'Tu techo. Se paga primero, el día que cobrás. Zona sana: menos del 30% del ingreso.' },
+  SERVICIOS(),
   { id: 'cuotas', name: 'Cuotas de préstamos', amt: 0, fijo: true, auto: true, why: 'Cada préstamo que derrotás libera su cuota, y esa cuota NO se gasta: pasa a atacar al siguiente (bola de nieve). Por eso el monto total para deudas se mantiene fijo aunque las cuotas bajen.' },
   { id: 'super', name: 'Supermercado', amt: 0, why: 'Una compra grande por semana con lista evita el goteo diario de compras chicas. Comida de casa = la palanca más fuerte del plan.' },
   { id: 'afuera', name: 'Comida afuera y delivery', amt: 0, why: 'Suele ser la mayor fuga. No es prohibir: es elegir 1–2 salidas buenas por semana.' },
@@ -145,7 +150,7 @@ const DEFAULT_GOALS = () => [
   { id: 'bariloche', name: 'Bariloche', target: 10000000, saved: 0, kind: 'viaje' },
   { id: 'bsas', name: 'Buenos Aires', target: 6000000, saved: 0, kind: 'viaje' }
 ];
-const DEFAULT_SETTINGS = () => ({ base: 0, extra: 0, ataqueMensual: 0, pctVenta: 50, metaFacturacion: 5000000, ivaAuto: true, lump: 0, lumpMes: '', lumpRecibido: false, viajesAntes: false });
+const DEFAULT_SETTINGS = () => ({ base: 0, extra: 0, ataqueMensual: 0, pctVenta: 50, metaFacturacion: 5000000, ivaAuto: true, lump: 0, lumpMes: '', lumpRecibido: false, lumpTarget: '', diaCobro: 0, viajesAntes: false });
 function blankState() {
   return {
     v: 2, created: today(), profile: { nombre: '', contexto: '' }, settings: DEFAULT_SETTINGS(),
@@ -163,6 +168,8 @@ function normalize(raw) {
   s.funds = Object.assign({ cofre: 0, iva: 0 }, s.funds || {});
   s.cards = s.cards || []; s.loans = s.loans || [];
   if (!s.budget || !s.budget.length) s.budget = DEFAULT_BUDGET();
+  if (!s.budget.some(b => b.id === 'servicios')) { const i = s.budget.findIndex(b => b.id === 'alquiler'); s.budget.splice(i + 1, 0, SERVICIOS()); }
+  s.fijos = s.fijos || []; // gastos fijos: { id, name, amt, dia, prio (1–3), amb, cat, cuenta, iva, sym, color }
   s.budget.forEach(b => { const d = BUDGET_META[b.id] || {}; b.color = b.color || d.color || 'gray'; b.tipo = b.tipo || d.tipo || 'nec'; b.sym = b.sym || d.sym || 'tag'; });
   s.goals = s.goals || [];
   DEFAULT_GOALS().forEach(g => { if (!s.goals.find(x => x.id === g.id)) s.goals.push(g); });
@@ -239,7 +246,9 @@ function replaceAll(state, movs) {
   commit({ add: movs, del });
 }
 function onData({ state, movs, pending }) {
-  if (pending) return; // eco de nuestras propias escrituras
+  // Eco de nuestras propias escrituras. Al abrir sin internet con cambios sin subir, la primera
+  // lectura viene "pendiente": hay que mostrarla igual o la app queda en la pantalla de carga.
+  if (pending && !firstData) return;
   if (!state) { if (firstData) { firstData = false; showOnboarding(); } return; }
   const sig = stable(state) + '|' + movSig(movs || []);
   if (!firstData && sig === LAST) return;
@@ -334,6 +343,31 @@ function origPicker(id, cur = '') {
     ${ls.map(l => `<button class="chip ${l.id === cur ? 'on' : ''}" data-act="pick" data-target="${id}" data-v="${l.id}" style="--c:var(--${l.color})"><span class="chip-ic">${sym('bank')}</span>Préstamo ${esc(entOf(l) || l.name)} · queda ${gsK(fondoQueda(l))}</button>`).join('')}</div>`;
 }
 const pickedOrig = id => { const e = $('#' + id); return e ? e.value : ''; };
+
+// Gastos fijos (alquiler, contadora, ANDE…): un pago por mes, con prioridad
+const fijo = id => S.fijos.find(f => f.id === id);
+const dueDate = (k, dia) => k + '-' + pad(Math.min(dia || 1, lastDay(k)));
+// Ciclo de cobro: del día de cobro de un mes al día anterior del siguiente (ej.: 25 nov → 24 dic).
+// Lo que pagás con el sueldo del 25 cubre lo que vence hasta el próximo cobro.
+const dcDay = () => S.settings.diaCobro || 25;
+const cycleOf = d => { const k = ym(d); return +d.slice(8) >= Math.min(dcDay(), lastDay(k)) ? k : addMonth(k, -1); };
+const cycleStart = k => dueDate(k, dcDay());
+const dueInCycle = (k, dia) => (dia || 1) >= dcDay() ? dueDate(k, dia) : dueDate(addMonth(k, 1), dia);
+const planCycle = () => cycleOf(dStr(new Date(Date.now() + 5 * 864e5))); // 5 días antes del cobro ya se planifica el ciclo nuevo
+const fijoCycle = f => { let k = planCycle(); if (f.desde && dueInCycle(k, f.dia) < f.desde) k = addMonth(k, 1); return k; };
+const fijoPaid = (f, k = fijoCycle(f)) => M.find(m => m.t === 'gasto' && m.fijo === f.id && (m.ciclo || cycleOf(m.date)) === k);
+const PRIO_L = { 1: 'Primero', 2: 'Importante', 3: 'Puede esperar' };
+const fijosSorted = () => S.fijos.slice().sort((a, b) => (a.prio || 2) - (b.prio || 2) || (a.dia || 0) - (b.dia || 0));
+// El sobre de un fijo personal (alquiler, servicios) toma como monto la suma de sus gastos fijos
+function syncFijoSobres() {
+  S.budget.forEach(b => {
+    if (!b.fijo || b.id === 'cuotas') return;
+    const fs = S.fijos.filter(f => f.amb !== 'negocio' && f.cat === b.id);
+    if (fs.length) b.amt = sum(fs, f => f.amt);
+  });
+}
+// Día de cobro: el cobro de este ciclo y el siguiente
+function payWindow() { const k = planCycle(); return { dc: dcDay(), pay: cycleStart(k), next: cycleStart(addMonth(k, 1)), mk: k }; }
 // Ventas que todavía no te pagaron (cuentas por cobrar)
 const receivables = () => M.filter(m => m.t === 'venta' && m.cobrada === false).sort(byDateDesc);
 
@@ -370,10 +404,20 @@ function simulate() {
   for (let i = 0; i < 72; i++) {
     // Mes actual: el sueldo ya está comprometido; cuenta lo que hay en el cofre. Meses siguientes: el monto fijo del plan.
     let budget = i === 0 ? sum(loans, l => sum(l.cs.filter(c => ym(c.d) <= k), c => c.a)) + Math.max(0, S.funds.cofre) : debtBudget();
-    let lump = 0;
-    if (!S.settings.lumpRecibido && S.settings.lumpMes === k && S.settings.lump) { lump = S.settings.lump; budget += lump; }
+    let lump = 0, lumpTo = null;
     const kills = [], killIds = []; let cuotas = 0;
     const kill = l => { kills.push(l.name); killIds.push(l.id); };
+    if (!S.settings.lumpRecibido && S.settings.lumpMes === k && S.settings.lump) {
+      lump = S.settings.lump;
+      // Aguinaldo con destino fijo: primero precancela ese préstamo (desde la última cuota); lo que sobra sigue el plan
+      const lt = S.settings.lumpTarget && loans.find(x => x.id === S.settings.lumpTarget);
+      let rem = lump;
+      if (lt && lt.cs.length) {
+        lumpTo = lt.name;
+        while (rem > 0 && lt.cs.length) { const c = lt.cs[lt.cs.length - 1]; if (c.a <= rem) { rem -= c.a; lt.cs.pop(); if (!lt.cs.length) kill(lt); } else { c.a -= rem; rem = 0; } }
+      }
+      budget += rem;
+    }
     loans.forEach(l => { while (l.cs.length && ym(l.cs[0].d) <= k) { budget -= l.cs[0].a; cuotas += l.cs[0].a; l.cs.shift(); if (!l.cs.length) kill(l); } });
     let extra = Math.max(0, budget), tarjeta = 0, ataque = 0, target = null;
     if (cd > 0 && extra > 0) { tarjeta = Math.min(cd, extra); cd -= tarjeta; extra -= tarjeta; }
@@ -385,7 +429,7 @@ function simulate() {
         if (c.a <= extra) { extra -= c.a; ataque += c.a; l.cs.pop(); if (!l.cs.length) kill(l); } else { c.a -= extra; ataque += extra; extra = 0; }
       }
     }
-    months.push({ k, cuotas, tarjeta, cardDone: tarjeta > 0 && cd <= 0, ataque, target, lump, kills, killIds, left: left() });
+    months.push({ k, cuotas, tarjeta, cardDone: tarjeta > 0 && cd <= 0, ataque, target, lump, lumpTo, kills, killIds, left: left() });
     if (left() <= 0) return { fin: k, months };
     k = addMonth(k, 1);
   }
@@ -615,6 +659,7 @@ function confetti() {
 }
 function openSheet(html) { const sh = $('#sheet'); sh.innerHTML = '<div class="grab"></div>' + html; sh.scrollTop = 0; $('#sheetBg').classList.add('on'); document.body.classList.add('sheet-open'); }
 function closeSheet() {
+  RETURN_TO = null;
   const bg = $('#sheetBg'); if (!bg.classList.contains('on')) return;
   bg.classList.remove('on'); document.body.classList.remove('sheet-open');
   setTimeout(() => { if (!bg.classList.contains('on')) $('#sheet').innerHTML = ''; }, 380);
@@ -692,6 +737,7 @@ function vHoy() {
   return `
   ${lt('Hoy', DIAS_L[d.getDay()] + ' ' + d.getDate() + ' de ' + MESES_L[d.getMonth()], `<button class="avatar" data-act="tab" data-tab="plan" aria-label="Plan y cuenta">${ini ? esc(ini) : sym('person')}</button>`)}
   ${setupCard()}
+  ${cobroCard()}
   <div class="rankrow"><div class="row"><span class="rkic">${sym(r[2])}</span><div><div class="rk">${r[1]}</div><small>Nivel ${lv} · ${fmt(S.xp)} XP · faltan ${250 - S.xp % 250} para el ${lv + 1}</small></div></div>
     <span class="pill lg" style="--c:var(--orange)">${sym('flame')}${st}</span></div>
   ${bar((S.xp % 250) / 2.5, 'xp')}
@@ -722,6 +768,15 @@ function vHoy() {
   ${sh('Logros', `<small>${Object.keys(S.ach).length}/${ACH.length}</small>`)}
   <div class="card"><div class="medals">${ACH.map(a => `<button class="medal ${S.ach[a[0]] ? 'on' : ''}" data-act="achInfo" data-id="${a[0]}" style="--c:var(--${ACH_COLOR[a[0]]})"><b>${sym(a[1])}</b>${esc(a[2])}</button>`).join('')}</div></div>`;
 }
+function cobroCard() {
+  if (!S.settings.base && !S.fijos.length) return '';
+  const { w, items } = cobroItems(), dd = daysBetween(today(), w.pay), tot = sum(items, x => x.a);
+  const when = dd < 0 ? 'Cobraste el ' + dLabel(w.pay) : dd === 0 ? 'Cobrás hoy' : dd === 1 ? 'Cobrás mañana' : 'Cobrás el ' + dLabel(w.pay);
+  return `<button class="card cobrocard" data-act="cobro">${icoBox('calendar', 'green', 'lg')}<div class="grow">
+    <div class="k-head" style="color:var(--green)">${when}${S.settings.diaCobro ? '' : ' (día 25)'}</div>
+    <div class="t">${items.length ? items.length + (items.length === 1 ? ' pago' : ' pagos') + ' antes del ' + dLabel(w.next) + ' · ' + gsK(tot) : 'Todo pagado hasta el próximo cobro'}</div>
+    <small>${S.fijos.length ? 'Ver el plan de pagos en orden' : 'Cargá tus gastos fijos en Plan para completar el plan'}</small></div>${CHEV}</button>`;
+}
 function setupCard() {
   const needInc = !S.settings.base, needDebt = !S.loans.length && !S.cards.length;
   if (!needInc && !needDebt) return '';
@@ -737,8 +792,9 @@ function upcoming() {
   S.loans.forEach(l => { const c = nextCuota(l); if (c) ups.push({ d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n, a: c.a, icon: 'bank', color: l.color, act: 'payCuota', id: l.id }); });
   S.cards.forEach(c => { if (c.extracto > 0 && c.vence) ups.push({ d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Pagá el total', a: c.extracto, icon: 'creditcard', color: 'indigo', act: 'payCard', id: c.id }); });
   pendPayables().forEach(p => { if (p.venc) ups.push({ d: p.venc, t: p.prov, s: 'Proveedor · ' + esc(p.desc || 'compra'), a: payPend(p), icon: 'box', color: 'indigo', act: 'payable', id: p.id }); });
+  S.fijos.forEach(f => { const k = fijoCycle(f), kk = fijoPaid(f, k) ? addMonth(k, 1) : k; ups.push({ d: dueInCycle(kk, f.dia), t: f.name, s: 'Gasto fijo · ' + (PRIO_L[f.prio || 2] || ''), a: f.amt, icon: f.sym || 'pin', color: f.color || 'blue', act: 'fijo', id: f.id }); });
   ups.sort((a, b) => a.d.localeCompare(b.d));
-  return ups.slice(0, 5).map(u => {
+  return ups.slice(0, 6).map(u => {
     const dd = daysBetween(t, u.d), col = dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'gray';
     const txt = dd < 0 ? 'vencida' : dd === 0 ? 'hoy' : dd === 1 ? 'mañana' : 'en ' + dd + ' días';
     return `<button class="cell" data-act="${u.act}" data-id="${u.id}">${icoBox(u.icon, u.color)}<div class="tx"><div class="t">${esc(u.t)}</div><div class="s">${u.s} · ${dLabel(u.d)}</div></div>
@@ -763,6 +819,7 @@ function movMeta(m) {
   const lc = id => (loan(id) || {}).color || 'red';
   switch (m.t) {
     case 'gasto': {
+      if (m.fijo && fijo(m.fijo)) { const f = fijo(m.fijo); return { icon: f.sym || 'pin', color: f.color || 'blue', title: f.name, sign: -1 }; }
       if (m.ambito === 'negocio') return { icon: 'briefcase', color: 'indigo', title: 'Gasto del negocio', sign: -1 };
       const b = S.budget.find(x => x.id === m.cat); return { icon: b ? b.sym : 'tag', color: b ? b.color : 'gray', title: b ? b.name : 'Gasto', sign: -1 };
     }
@@ -873,7 +930,7 @@ function roadmap() {
     if (m.cuotas) parts.push('cuotas ' + gsK(m.cuotas));
     if (m.tarjeta) parts.push('tarjeta ' + gsK(m.tarjeta));
     if (m.ataque) parts.push('ataque ' + gsK(m.ataque));
-    if (m.lump) parts.push('incluye aguinaldo ' + gsK(m.lump));
+    if (m.lump) parts.push(m.lumpTo ? 'aguinaldo ' + gsK(m.lump) + ' → precancela ' + m.lumpTo : 'incluye aguinaldo ' + gsK(m.lump));
     const cur = i === 0 && m.k === k0;
     return `<div class="cell road ${cur ? 'cur' : ''} ${m.left <= 0 ? 'free' : ''}">
       <div class="calb"><small>${y}</small><b>${cap(MESES[+mo - 1])}</b></div>
@@ -1232,6 +1289,7 @@ function vPlan() {
   ${sh('Tu plata, paso a paso')}
   ${distCard()}
   <div class="group steps mt">${stepsHtml()}</div>
+  ${fijosSection()}
   ${sh('Sobres del mes', '<button class="link" data-act="newBudget">Agregar</button>')}
   <div class="group ic">${S.budget.map(sobreRow).join('')}</div>
   ${sh('Metas')}
@@ -1246,7 +1304,7 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.4.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.5.0</p>`;
 }
 
 /* =========================================================================
@@ -1757,6 +1815,142 @@ function doPayCard(id) {
 }
 
 /* =========================================================================
+   Gastos fijos y plan del día de cobro
+   ========================================================================= */
+const FIJO_SUG = [
+  { name: 'Alquiler', cat: 'alquiler', prio: 1, sym: 'house', color: 'blue' },
+  { name: 'Contadora', amb: 'negocio', prio: 1, sym: 'receipt', color: 'indigo', iva: '10' },
+  { name: 'ANDE (luz)', cat: 'servicios', prio: 1, sym: 'bolt', color: 'yellow' },
+  { name: 'Internet', cat: 'servicios', prio: 2, sym: 'wifi', color: 'cyan' },
+  { name: 'Plan de celular', cat: 'servicios', prio: 2, sym: 'phone', color: 'teal' },
+  { name: 'Agua', cat: 'servicios', prio: 2, sym: 'leaf', color: 'mint' },
+  { name: 'Combustible', cat: 'combustible', prio: 2, sym: 'car', color: 'purple' }
+];
+function fijoRow(f) {
+  const k = fijoCycle(f), paid = fijoPaid(f, k), due = dueInCycle(k, f.dia), dd = daysBetween(today(), due);
+  const when = paid ? 'Pagado el ' + dLabel(paid.date) : dd < 0 ? 'Vencido hace ' + (-dd) + (dd === -1 ? ' día' : ' días') : dd === 0 ? 'Vence hoy' : 'Vence el ' + dLabel(due) + (dd <= 5 ? ' · en ' + dd + (dd === 1 ? ' día' : ' días') : '');
+  return `<button class="cell" data-act="fijo" data-id="${f.id}">${icoBox(paid ? 'check' : f.sym || 'pin', paid ? 'green' : f.color || 'blue')}<div class="tx"><div class="t">${esc(f.name)}</div>
+    <div class="s">${PRIO_L[f.prio || 2]} · ${when}</div></div>
+    <div class="v">${paid ? `<span class="pill" style="--c:var(--green)">${sym('check')}Pagado</span>` : `<span class="num">${gsK(f.amt)}</span><small style="color:var(--${dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'label2'})">a pagar</small>`}</div>${CHEV}</button>`;
+}
+function fijosSection() {
+  const w = payWindow(), fs = fijosSorted(), paid = fs.filter(f => fijoPaid(f)), tot = sum(fs, f => f.amt), pp = sum(paid, f => fijoPaid(f).amt);
+  return sh('Gastos fijos', '<button class="link" data-act="newFijo">Agregar</button>') +
+    (fs.length ? `<div class="card" style="padding:14px 16px">
+        <div class="row between"><b>${paid.length} de ${fs.length} pagados</b><span class="num s2">${gsK(pp)} de ${gsK(tot)}</span></div>
+        <div class="mt">${bar(tot ? pp / tot * 100 : 0, '', 'var(--green)')}</div>
+        <small style="display:block;margin-top:6px">Ciclo del cobro del ${dLabel(w.pay)} al ${dLabel(dStr(new Date(new Date(w.next + 'T12:00') - 864e5)))}</small></div>
+      <div class="group ic mt">${fs.map(fijoRow).join('')}</div>
+      <p class="gf">Se pagan primero, el día que cobrás: alquiler, contadora y ANDE adelante de todo.</p>`
+    : `<div class="group ic">${cellLink('newFijo', 'pin', 'blue', 'Cargá tus gastos fijos', 'Alquiler, contadora, ANDE, internet, celular…')}</div>`);
+}
+function fijoForm(id, sugI) {
+  const f = id ? fijo(id) : Object.assign({ name: '', amt: 0, dia: 5, prio: 1, amb: 'personal', cat: 'servicios', sym: 'pin', color: 'blue', iva: '10' }, sugI != null ? FIJO_SUG[sugI] : {});
+  const amb = f.amb || 'personal', cats = S.budget.filter(b => b.id !== 'cuotas');
+  openSheet(`${head(id ? 'Editar gasto fijo' : 'Nuevo gasto fijo', `<button class="link b" data-act="saveFijo" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
+    ${id ? '' : `<div class="chips" style="margin-bottom:14px">${FIJO_SUG.map((s, i) => `<button class="chip ${sugI === i ? 'on' : ''}" data-act="fijoSug" data-i="${i}" style="--c:var(--${s.color})"><span class="chip-ic">${sym(s.sym)}</span>${esc(s.name)}</button>`).join('')}</div>`}
+    <div class="group">
+      ${field('Nombre', `<input id="fjN" placeholder="Ej: Alquiler" value="${esc(f.name)}">`)}
+      ${field('Monto mensual', money('fjA', f.amt || ''))}
+      ${field('Vence el día', `<input id="fjD" inputmode="numeric" placeholder="1–31" value="${f.dia || ''}">`)}
+    </div>
+    <div class="gh">Prioridad</div><input type="hidden" id="fjP" value="${f.prio || 1}">
+    <div class="seg">${[[1, '1 · Primero'], [2, '2 · Importante'], [3, '3 · Puede esperar']].map(([v, l]) => `<button class="${+(f.prio || 1) === v ? 'on' : ''}" data-act="pick" data-target="fjP" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="gh">Tipo</div><input type="hidden" id="fjM" value="${amb}">
+    <div class="seg">${[['personal', 'Personal'], ['negocio', 'Del negocio (con factura)']].map(([v, l]) => `<button class="${amb === v ? 'on' : ''}" data-act="pick" data-target="fjM" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="group mt">${field('Sobre (si es personal)', `<select id="fjC">${cats.map(b => `<option value="${b.id}" ${b.id === f.cat ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>`)}</div>
+    ${acctPicker('fjCta', 'Se paga desde', f.cuenta || acctDefault())}
+    <input type="hidden" id="fjS" value="${esc(f.sym || 'pin')}"><input type="hidden" id="fjK" value="${esc(f.color || 'blue')}"><input type="hidden" id="fjI" value="${esc(f.iva || '10')}">
+    <p class="gf">Los del negocio (como la contadora) con factura a tu RUC suman IVA crédito.</p>
+    ${id ? `<button class="btn w mt2" style="--c:var(--red)" data-act="delFijo" data-id="${id}">Eliminar gasto fijo</button>` : ''}`);
+}
+function saveFijo(id) {
+  const name = $('#fjN').value.trim(), amt = parseN($('#fjA').value), dia = clamp(parseN($('#fjD').value) || 1, 1, 31);
+  if (!name || !amt) return toast('Completá nombre y monto');
+  const v = { name, amt, dia, prio: +$('#fjP').value || 2, amb: $('#fjM').value, cat: $('#fjC').value, cuenta: pickedAcct('fjCta'), sym: $('#fjS').value, color: $('#fjK').value, iva: $('#fjI').value };
+  if (id) Object.assign(fijo(id), v); else { S.fijos.push(Object.assign({ id: uid(), desde: today() }, v)); addXP(5); }
+  syncFijoSobres(); commit(); closeSheet(); render(); toast(id ? 'Gasto fijo actualizado' : name + ' agregado a tus gastos fijos');
+}
+function delFijo(id) { S.fijos = S.fijos.filter(f => f.id !== id); syncFijoSobres(); commit(); closeSheet(); render(); toast('Gasto fijo eliminado'); }
+function fijoSheet(id) {
+  const f = fijo(id); if (!f) return;
+  const k = fijoCycle(f), paid = fijoPaid(f, k), due = dueInCycle(k, f.dia), hist = M.filter(m => m.t === 'gasto' && m.fijo === id).sort(byDateDesc).slice(0, 6);
+  openSheet(`${head(esc(f.name), `<button class="link" data-act="editFijo" data-id="${id}">Editar</button>`)}
+    <div class="center" style="padding:4px 0 14px">${icoBox(paid ? 'check' : f.sym || 'pin', paid ? 'green' : f.color || 'blue', 'xl')}${big(fmt(f.amt) + '<span class="u">Gs</span>')}<small>${PRIO_L[f.prio || 2]} · vence el ${f.dia} de cada mes${f.amb === 'negocio' ? ' · del negocio' : ''}</small></div>
+    ${paid ? `<div class="note">Ya está pagado el que vence el ${dLabel(due)}: <b>${gs(paid.amt)}</b> el ${dLabel(paid.date)}${paid.cuenta ? ' desde ' + esc(acctName(paid.cuenta)) : ''}.</div>`
+      : `<button class="btn p w" style="--c:var(--green)" data-act="fijoPay" data-id="${id}">${sym('check')}Pagar el que vence el ${dLabel(due)}</button>`}
+    ${hist.length ? `<div class="gh">Últimos pagos</div><div class="group ic">${hist.map(movRow).join('')}</div>` : ''}`);
+}
+function fijoPaySheet(id) {
+  const f = fijo(id); if (!f) return;
+  openSheet(`${head('Pagar ' + esc(f.name), `<button class="link b" data-act="doFijoPay" data-id="${id}">Guardar</button>`, `<button class="link" data-act="fijo" data-id="${id}">Atrás</button>`)}
+    <div class="group">${field('Monto pagado', money('fpA', f.amt))}${field('Fecha', `<input id="fpD" type="date" value="${today()}">`)}</div>
+    ${acctPicker('fpCta', 'Pagado desde', f.cuenta && acct(f.cuenta) ? f.cuenta : acctDefault())}${origPicker('fpOrig')}
+    <button class="btn p w mt2" style="--c:var(--green)" data-act="doFijoPay" data-id="${id}">Confirmar pago</button>`);
+}
+function doFijoPay(id) {
+  const f = fijo(id), amt = parseN($('#fpA').value); if (!amt) return toast('Ingresá el monto');
+  const neg = f.amb === 'negocio', iva = neg ? f.iva || '10' : 'none';
+  const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'gasto', ambito: neg ? 'negocio' : 'personal', medio: 'debito', cat: neg ? 'negocio' : f.cat,
+    iva, ivaAmt: ivaOf(amt, iva), cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: fijoCycle(f), note: f.name };
+  applyMov(m); M.push(m); addXP(10); checkin(); haptic(12); checkAch(); commit({ add: [m] }); closeSheet(); render();
+  toast(f.name + ' pagado · ' + gs(amt));
+}
+// Plan del día de cobro: qué pagar y en qué orden con lo que cobrás
+function cobroItems() {
+  const w = payWindow(), items = [];
+  S.fijos.forEach(f => {
+    const k = fijoCycle(f), due = dueInCycle(k, f.dia);
+    if (!fijoPaid(f, k) && due < w.next) items.push({ prio: f.prio || 2, d: due, t: f.name, s: 'Gasto fijo · vence el ' + dLabel(due), a: f.amt, act: 'fijoPay', id: f.id, icon: f.sym || 'pin', color: f.color || 'blue' });
+  });
+  S.loans.forEach(l => l.cuotas.forEach(c => {
+    if (c.paid || c.d >= w.next) return;
+    const agui = S.settings.lumpTarget === l.id && !S.settings.lumpRecibido && S.settings.lumpMes && ym(c.d) >= S.settings.lumpMes;
+    if (!agui) items.push({ prio: 1, d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n + ' · vence ' + dLabel(c.d), a: c.a, act: 'payCuota', id: l.id, icon: 'bank', color: l.color });
+  }));
+  S.cards.forEach(c => { if (c.extracto > 0 && c.vence && c.vence < w.next) items.push({ prio: 1, d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Total del extracto · vence ' + dLabel(c.vence), a: c.extracto, act: 'payCard', id: c.id, icon: 'creditcard', color: 'indigo', card: true }); });
+  pendPayables().forEach(p => { if (p.venc && p.venc < w.next && !p.venta) items.push({ prio: 2, d: p.venc, t: p.prov, s: 'Proveedor · vence ' + dLabel(p.venc), a: payPend(p), act: 'payable', id: p.id, icon: 'box', color: 'indigo' }); });
+  items.sort((a, b) => a.prio - b.prio || a.d.localeCompare(b.d));
+  // Para vivir: los sobres variables del mes (los que no están cubiertos por un gasto fijo)
+  const covered = new Set(S.fijos.filter(f => f.amb !== 'negocio').map(f => f.cat));
+  const vivir = S.budget.filter(b => !b.fijo && !covered.has(b.id) && b.amt > 0);
+  return { w, items, vivir };
+}
+function cobroList(ingreso, useCofre) {
+  const { items, vivir } = cobroItems();
+  let left = ingreso + (useCofre ? Math.max(0, S.funds.cofre) : 0);
+  const row = (x, n) => { left -= x.a; return `<div class="cell cobro">${icoBox(x.icon, x.color)}<div class="tx"><div class="t"><span class="nb2">${n}</span>${esc(x.t)}</div><div class="s">${x.s}</div>
+      <div class="s ${left < 0 ? 'neg' : ''}">queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div>
+    <div class="v"><span class="num">${gsK(x.a)}</span><button class="btn sm" style="--c:var(--green);margin-top:4px;padding:5px 10px" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}">Pagar</button></div></div>`; };
+  const tiers = [[1, 'Primero: no se negocia'], [2, 'Después'], [3, 'Si alcanza']];
+  let n = 0, html = '';
+  tiers.forEach(([p, l]) => { const xs = items.filter(x => x.prio === p); if (xs.length) html += `<div class="gh">${l}</div><div class="group ic">${xs.map(x => row(x, ++n)).join('')}</div>`; });
+  const viv = sum(vivir, b => b.amt);
+  if (viv) { left -= viv; html += `<div class="gh">Para vivir el mes</div><div class="group ic"><div class="cell cobro">${icoBox('cart', 'green')}<div class="tx"><div class="t"><span class="nb2">${++n}</span>Sobres del mes</div><div class="s">${vivir.map(b => esc(b.name.split(' ')[0]) + ' ' + gsK(b.amt)).join(' · ')}</div><div class="s ${left < 0 ? 'neg' : ''}">queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div><div class="v num">${gsK(viv)}</div></div></div>`; }
+  html += left >= 0
+    ? `<div class="note mt"><b>Te sobran ${gs(left)}</b>: van al cofre para atacar a ${esc((attackOrder().list[0] || {}).name || 'la deuda')}. No los dejes sueltos en la cuenta.</div>`
+    : `<div class="note mt" style="background:color-mix(in srgb,var(--red) 12%,transparent)"><b style="color:var(--red)">Faltan ${gs(-left)}.</b> ${useCofre ? 'Recortá sobres variables (comida afuera, pádel) o esperá las horas extra.' : 'Activá “Usar el cofre” o esperá las horas extra; si no, recortá sobres variables.'}</div>`;
+  return html;
+}
+function cobroSheet() {
+  RETURN_TO = 'cobro';
+  const { w } = cobroItems(), st = S.settings, inc = lsGet('libre-cobro-amt');
+  const lt = st.lumpTarget && loan(st.lumpTarget);
+  openSheet(`${head('Plan del día de cobro')}
+    <p class="gf" style="margin:0 4px 12px">${w.pay < today() ? 'Cobraste' : 'Cobrás'} el <b>${dLabel(w.pay)}</b>. Esto es lo que tenés que pagar antes del próximo cobro (${dLabel(w.next)}), en orden.</p>
+    <div class="group">${field('Lo que cobrás', money('cpA', inc ? +inc : st.base))}
+      <label class="cell"><div class="tx"><div class="t">Usar el cofre</div><div class="s">${gs(S.funds.cofre)} de tus ventas</div></div><input type="checkbox" class="sw" id="cpC" data-change="cobroLive"></label></div>
+    <div id="cpList">${cobroList(inc ? +inc : st.base, false)}</div>
+    ${lt ? `<div class="note mt">${sym('gift')} <b>Aguinaldo${st.lumpMes ? ' (' + ymLabel(st.lumpMes) + ')' : ''}:</b> precancelás <b>${esc(debtName(lt))}</b> (${gs(loanSaldo(lt))} en cuotas; pedí el saldo de precancelación, suele ser menor). Sus cuotas desde ${ymLabel(st.lumpMes)} las cubre el aguinaldo.</div>` : ''}
+    <p class="gf">Tocá <b>Pagar</b> en cada línea a medida que pagás: queda registrado con la cuenta y se tacha del plan.</p>`);
+}
+function cobroLive() {
+  const v = parseN(($('#cpA') || {}).value), box = $('#cpList'); if (!box) return;
+  lsSet('libre-cobro-amt', String(v)); box.innerHTML = cobroList(v, !!($('#cpC') || {}).checked);
+}
+let RETURN_TO = null;
+
+/* =========================================================================
    Hojas: entidades (a quién le debés)
    ========================================================================= */
 function entFillSheet() {
@@ -2249,8 +2443,12 @@ function settingsSheet() {
     <div class="gh">Deudas</div>
     <div class="group">${field('Cuotas fijas del plan', money('stCuotas', S.baseCuotas))}${field('Ataque extra / mes', money('stAtq', st.ataqueMensual))}</div>
     <p class="gf">Monto fijo para deudas = cuotas + ataque. Cuando cae un préstamo, su cuota se suma al ataque (no se baja este número).</p>
+    <div class="gh">Cobro del sueldo</div>
+    <div class="group">${field('Día de cobro', `<input id="stDia" inputmode="numeric" placeholder="25" value="${st.diaCobro || ''}">`)}</div>
+    <p class="gf">El plan del día de cobro ordena lo que tenés que pagar hasta el cobro siguiente.</p>
     <div class="gh">Golpe anual (aguinaldo)</div>
     <div class="group">${field('Monto para atacar', money('stLump', st.lump))}${field('Mes', `<input id="stLumpMes" type="month" value="${esc(st.lumpMes)}">`)}
+      ${field('Va a', `<select id="stLumpT"><option value="">El plan decide</option>${activeLoans().map(l => `<option value="${l.id}" ${st.lumpTarget === l.id ? 'selected' : ''}>Precancelar ${esc(debtName(l))}</option>`).join('')}</select>`)}
       <label class="cell"><div class="tx">Ya lo recibí</div>${sw('stLumpOk', st.lumpRecibido)}</label></div>
     <div class="gh">Negocio</div>
     <div class="group">${field('Meta de facturación', money('stMeta', st.metaFacturacion))}${field('% de ganancia al cofre', `<input id="stPct" inputmode="numeric" value="${st.pctVenta}">`)}
@@ -2267,6 +2465,7 @@ function saveSettings() {
   const st = S.settings, n = id => parseN($('#' + id).value);
   st.base = n('stBase'); st.extra = n('stExtra'); S.baseCuotas = n('stCuotas'); st.ataqueMensual = n('stAtq');
   st.lump = n('stLump'); st.lumpMes = $('#stLumpMes').value; st.lumpRecibido = $('#stLumpOk').checked;
+  st.lumpTarget = $('#stLumpT').value; st.diaCobro = clamp(n('stDia'), 0, 31);
   st.metaFacturacion = n('stMeta'); st.pctVenta = clamp(n('stPct'), 0, 100); st.ivaAuto = $('#stIva').checked; st.viajesAntes = $('#stViajes').checked;
   S.profile.nombre = $('#stName').value.trim(); S.profile.contexto = $('#stCtx').value.trim();
   SIM = null; commit(); closeSheet(); render(); toast('Plan recalculado: libre en ' + ymLabel(projection()));
@@ -2287,6 +2486,9 @@ function accountSheet() {
       <button class="cell" data-act="logout"><div class="tx" style="color:var(--red)">Cerrar sesión</div></button></div>`
     : `<div class="group mt"><button class="cell" data-act="goCloud"><div class="tx" style="color:var(--blue)">${Store.cloudConfigured() ? 'Iniciar sesión o crear cuenta' : 'Configurar la nube (ver README)'}</div></button></div>
        <p class="gf">Con una cuenta, tus datos quedan en la nube y los ves desde el celular y la compu.</p>`}
+    <div class="gh">Seguridad en este dispositivo</div>
+    <div class="group" id="lockGroup"><div class="cell"><div class="tx s2">Buscando Face ID o huella…</div></div></div>
+    <p class="gf">Con el bloqueo activo, la app pide Face ID o huella al abrirse y al volver después de un minuto. Funciona también sin internet.</p>
     <div class="gh">Copias de seguridad</div>
     <div class="group">
       <button class="cell" data-act="export"><div class="tx" style="color:var(--blue)">Descargar copia (.json)</div></button>
@@ -2295,6 +2497,12 @@ function accountSheet() {
     </div>
     <p class="gf">Importar reemplaza todo lo actual. Acepta copias de esta versión y de la anterior (libre-de-deudas.html).</p>
     <div class="group mt2"><button class="cell" data-act="resetAll"><div class="tx" style="color:var(--red)">Borrar todo y empezar de cero</div></button></div>`);
+  lockAvailable().then(ok => {
+    const g = $('#lockGroup'); if (!g) return;
+    g.innerHTML = ok
+      ? `<label class="cell">${icoBox('faceid', 'green')}<div class="tx"><div class="t">Bloqueo con Face ID / huella</div><div class="s">Solo en este dispositivo</div></div><input type="checkbox" class="sw" data-change="lockToggle" ${lsGet(LOCK_KEY) ? 'checked' : ''}></label>`
+      : `<div class="cell">${icoBox('faceid', 'gray')}<div class="tx"><div class="t">Face ID / huella no disponible</div><div class="s">Abrí la app en Safari del iPhone (o agregala a inicio) para activarlo</div></div></div>`;
+  });
 }
 function rulesSheet() {
   openSheet(`${head('Las 7 reglas del juego')}<div class="group steps">${REGLAS.map(([t, p]) => `<div class="step"><span class="nb"></span><div><b>${t}</b><p>${p}</p></div></div>`).join('')}</div>`);
@@ -2375,8 +2583,66 @@ const AUTH_MSG = {
   'auth/network-request-failed': 'Sin conexión. Revisá tu internet.', 'auth/operation-not-allowed': 'Activá Email/Contraseña en Firebase (README paso 2).',
   'auth/admin-restricted-operation': 'El registro de cuentas nuevas está desactivado.'
 };
+/* ---------- Bloqueo con Face ID / huella (WebAuthn del dispositivo) ----------
+   La llave queda en el chip seguro del celular; la app solo guarda su id en este navegador. */
+const LOCK_KEY = 'libre-lock';
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+async function lockAvailable() {
+  try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { return false; }
+}
+async function enableLock() {
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge: rnd(32), rp: { name: 'Libre', id: location.hostname }, user: { id: rnd(16), name: 'Libre', displayName: 'Libre' },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+    timeout: 60000, attestation: 'none' } });
+  lsSet(LOCK_KEY, b64(cred.rawId));
+}
+let LOCKED = false, HIDDEN_AT = 0;
+function showLock() {
+  if (!lsGet(LOCK_KEY) || LOCKED) return;
+  LOCKED = true;
+  let el = $('#lock'); if (!el) { el = document.createElement('div'); el.id = 'lock'; document.body.appendChild(el); }
+  el.innerHTML = `<div class="lock-in"><img class="appicon" src="assets/icon.svg" alt=""><h1>Libre</h1><p class="tag">Bloqueada para que nadie vea tus finanzas</p>
+    <button class="btn p w" data-act="unlock">${sym('faceid')}Desbloquear</button>
+    <div class="err" id="lockErr"></div>
+    <button class="link mt2" style="font-size:15px" data-act="lockLogout">Entrar con mi contraseña</button></div>`;
+  el.classList.add('on'); document.body.classList.add('locked');
+  setTimeout(tryUnlock, 350);
+}
+function hideLock() { LOCKED = false; const el = $('#lock'); if (el) el.classList.remove('on'); document.body.classList.remove('locked'); }
+let UNLOCKING = false;
+async function tryUnlock() {
+  const id = lsGet(LOCK_KEY); if (!id) return hideLock();
+  if (UNLOCKING) return; UNLOCKING = true;
+  try {
+    await navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64(id), transports: ['internal'] }], userVerification: 'required', timeout: 60000 } });
+    hideLock(); haptic(10);
+  } catch (e) {
+    const er = $('#lockErr'); if (er) er.textContent = e.name === 'NotAllowedError' ? 'Tocá “Desbloquear” para usar Face ID o tu huella.' : 'No se pudo: ' + (e.message || e.name);
+  }
+  UNLOCKING = false;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) HIDDEN_AT = Date.now();
+  else if (HIDDEN_AT && Date.now() - HIDDEN_AT > 60000 && APP_ON) showLock();
+});
+
+/* ---------- Sin internet: la app sigue funcionando y sube los cambios al volver ---------- */
+function netBadge() {
+  let el = $('#net'); if (!el) { el = document.createElement('div'); el.id = 'net'; document.body.appendChild(el); }
+  const off = !navigator.onLine;
+  el.innerHTML = `${sym('wifi')}Sin internet · tus cambios se guardan y se suben al volver`;
+  el.classList.toggle('on', off);
+}
+window.addEventListener('online', () => { netBadge(); if (APP_ON) toast('Volvió internet: sincronizando'); });
+window.addEventListener('offline', () => netBadge());
+
 function showSplash() { $('#app').innerHTML = '<div class="splash"><div class="spin"></div></div>'; }
 function authShell(inner) {
+  hideLock(); // sin sesión no hay datos que proteger
   APP_ON = false; document.body.classList.add('auth'); $('#dock').classList.add('hide'); closeSheet();
   $('#app').innerHTML = `<div class="auth-wrap"><img class="appicon" src="assets/icon.svg" alt="">${inner}</div>`;
 }
@@ -2432,6 +2698,8 @@ async function startCloud(user) {
   } catch (e) { console.error(e); showLogin('No se pudo conectar con la nube.'); }
 }
 async function boot() {
+  netBadge();
+  showLock();
   if (lsGet('libre-mode') === 'local') return startLocal();
   if (!Store.cloudConfigured()) return showLogin();
   showSplash();
@@ -2489,6 +2757,12 @@ const ACT = {
   explainAcct: (d, el) => armed(el) && explainAcct(d.id),
   fondo: d => fondoSheet(d.id), saveFondo: d => saveFondo(d.id), delFondo: (d, el) => armed(el) && delFondo(d.id),
   movOrig: d => movOrigSheet(d.id), saveMovOrig: d => saveMovOrig(d.id),
+  fijo: d => fijoSheet(d.id), newFijo: () => fijoForm(), editFijo: d => fijoForm(d.id), fijoSug: d => fijoForm(null, +d.i),
+  saveFijo: d => saveFijo(d.id), delFijo: (d, el) => armed(el) && delFijo(d.id),
+  fijoPay: d => fijoPaySheet(d.id), doFijoPay: d => doFijoPay(d.id),
+  cobro: () => cobroSheet(),
+  cobroPay: d => { const f = { fijoPay: fijoPaySheet, payCuota: payCuotaSheet, payCard: payCardSheet, payable: payableSheet }[d.k]; if (f) { f(d.id); RETURN_TO = 'cobro'; } },
+  unlock: () => tryUnlock(), lockLogout: async () => { hideLock(); if (BK && BK.kind === 'cloud') await Store.logout(); },
   moveFund: d => moveSheet(d.from, d.to), doMove: () => doMove(),
   settings: () => settingsSheet(), saveSettings: () => saveSettings(), theme: d => setTheme(d.v),
   account: () => accountSheet(), rules: () => rulesSheet(), prompt: () => promptSheet(), copyPrompt: () => copyPrompt(),
@@ -2506,6 +2780,11 @@ const ACT = {
   obLegacy: () => { try { const r = fromV1(JSON.parse(lsGet(LEGACY_KEY))); replaceAll(r.state, r.movs); showApp(); toast('Datos de la versión anterior importados'); } catch (e) { toast('No se pudieron leer los datos anteriores'); } }
 };
 const CHG = {
+  cobroLive: () => cobroLive(),
+  lockToggle: async el => {
+    if (el.checked) { try { await enableLock(); toast('Listo: la app pide Face ID / huella al abrirse'); } catch (e) { el.checked = false; toast('No se pudo activar: ' + (e.name === 'NotAllowedError' ? 'cancelado' : e.message || e.name)); } }
+    else { lsDel(LOCK_KEY); toast('Bloqueo desactivado en este dispositivo'); }
+  },
   task: el => { S.tasks[el.dataset.id] = el.checked; addXP(el.checked ? 25 : -25); checkAch(); commit(); render(); },
   importFile: el => readFile(el, r => { replaceAll(r.state, r.movs); closeSheet(); render(true); toast('Copia importada'); }),
   obImport: el => readFile(el, r => { replaceAll(r.state, r.movs); showApp(); toast('Datos importados · ¡a jugar!'); confetti(); })
@@ -2513,7 +2792,10 @@ const CHG = {
 document.addEventListener('click', e => {
   const tb = e.target.closest('#tabbar [data-tab]'); if (tb) { go(tb.dataset.tab); haptic(); return; }
   const el = e.target.closest('[data-act]'); if (!el || el.disabled) return;
-  const fn = ACT[el.dataset.act]; if (fn) fn(el.dataset, el, e);
+  const fn = ACT[el.dataset.act], ret = RETURN_TO; if (!fn) return;
+  fn(el.dataset, el, e);
+  // Después de pagar algo desde el plan de cobro, volver al plan
+  if (ret === 'cobro' && ['doFijoPay', 'doPayCuota', 'doPayCard', 'doPayProv'].includes(el.dataset.act)) setTimeout(() => { if (!sheetOpen()) cobroSheet(); }, 450);
 });
 document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (el && CHG[el.dataset.change]) CHG[el.dataset.change](el, e); });
 document.addEventListener('input', e => {
@@ -2521,6 +2803,7 @@ document.addEventListener('input', e => {
   if (t.matches && t.matches('input[data-money]')) { const n = parseN(t.value); t.value = n ? fmt(n) : ''; }
   if (t.closest && t.closest('#sheet') && $('#fAmt')) addLive(e);
   if (t.id === 'cnA') concLive();
+  if (t.id === 'cpA') cobroLive();
 });
 // Gráfico de la deuda: cruz + tooltip con mouse, dedo o teclado
 document.addEventListener('pointermove', dchartPointer, { passive: true });
