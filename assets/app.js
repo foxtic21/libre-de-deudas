@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.0.1';
+import * as Store from './store.js?v=2.0.2';
 
 /* =========================================================================
    Utilidades
