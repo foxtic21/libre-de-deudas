@@ -431,6 +431,29 @@ body.locked .dock,body.locked #app{visibility:hidden}
 .rings .leg .v .s2{font-size:13px}
 .rings .leg .t{white-space:nowrap}
 
+/* ---------- tarjeta protagonista de cada pantalla (misma estructura que el ciclo en Hoy) ---------- */
+.herocard{padding:20px 20px 16px}
+.herocard .cap+.chart{margin-top:14px}
+.hero-sub{font-size:15px;color:var(--label2);line-height:1.4;margin-top:6px}
+.hero-sub b{color:var(--label);font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:18px;padding-top:14px;border-top:.5px solid var(--sep)}
+.stats.four{grid-template-columns:repeat(4,1fr)}
+.stats .k{font-size:12px;color:var(--label2);white-space:nowrap}
+.stats .n{font:600 17px/1.2 var(--num);margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cyrows .cyrow:first-child{padding-top:4px}
+/* botón cápsula discreto: acciones dentro de tarjetas, como "Obtener" en el App Store */
+.btn.soft{font-size:15px;font-weight:600;padding:8px 16px;border-radius:99px;background:var(--fill);color:var(--blue)}
+.caps{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+/* la barra de vida usa un solo color, el de las deudas en todos los gráficos */
+.bar.hpbar>i{background:var(--c-deuda)}
+.boss.target{box-shadow:var(--shadow)}
+.boss-note{font-size:13px;color:var(--label2);line-height:1.4;margin-top:12px}
+.boss-note b{color:var(--label);font-weight:600}
+.bossrow .t{font-weight:500}
+.bossrow .s{white-space:normal}
+.ordn{width:30px;height:30px;border-radius:7.5px;display:grid;place-items:center;flex:none;background:var(--fill);color:var(--label2);font:600 15px/1 var(--num)}
+.bossrow .bar{height:5px}
+
 /* ---------- movimientos: entró / salió ---------- */
 .io{display:flex;justify-content:space-between;align-items:baseline;font-size:15px}
 .io span{color:var(--label2)}
