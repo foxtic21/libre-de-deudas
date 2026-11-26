@@ -376,6 +376,11 @@ body.locked .dock,body.locked #app{visibility:hidden}
 #net.on{transform:translate(-50%,0)}
 #net svg.i{width:15px;height:15px;stroke-width:2.3;flex:none}
 
+/* ---------- coach ---------- */
+.coach .cell{align-items:flex-start;padding-top:12px;padding-bottom:12px}
+.coach .t{white-space:normal;font-weight:600;font-size:16px}
+.coach .s{white-space:normal;line-height:1.35;margin-top:2px}
+
 /* ---------- plan del día de cobro ---------- */
 .cobrocard{display:flex;gap:12px;align-items:center;width:100%;border:0;text-align:left;font:inherit;color:inherit;cursor:pointer;margin-bottom:18px}
 .cobrocard .t{font-weight:600;margin-top:2px}
