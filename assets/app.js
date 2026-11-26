@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.10.0';
+import * as Store from './store.js?v=2.11.0';
 
 /* =========================================================================
    Utilidades
@@ -483,8 +483,10 @@ function monthSpent(cat, k = curCycle()) {
 const factMonth = k => sum(inMonth(k, ['venta']), m => m.amt);
 const ganancia = m => m.ganancia ?? m.neto ?? m.amt;
 function bestMonthFact() { const by = {}; M.filter(m => m.t === 'venta').forEach(m => { const k = ym(m.date); by[k] = (by[k] || 0) + m.amt; }); return Math.max(0, ...Object.values(by)); }
-function monthSummary(k) {
-  const ms = M.filter(m => ym(m.date) === k), f = t => ms.filter(t);
+// Resumen de un grupo de movimientos (un mes o un día): qué entró, qué salió y en qué
+const monthSummary = k => summaryOf(M.filter(m => ym(m.date) === k));
+function summaryOf(ms) {
+  const f = t => ms.filter(t);
   const ingresos = sum(f(m => m.t === 'ingreso' || (m.t === 'venta' && m.cobrada !== false)), m => m.amt);
   const gPers = sum(f(m => m.t === 'gasto' && m.ambito !== 'negocio'), m => m.amt);
   // Negocio: gastos + costo pagado al proveedor con la venta + pagos directos a proveedores (los "con la venta" ya están en el costo)
@@ -1041,44 +1043,59 @@ function movMeta(m) {
   }
   return { icon: 'tag', color: 'gray', title: 'Movimiento', sign: 0 };
 }
+// Fila de movimiento: título, una línea gris con lo esencial y el monto. Pastilla solo para lo que pide atención.
 function movRow(m) {
-  const mm = movMeta(m), tags = [];
-  if (m.medio === 'tc') tags.push('<span class="pill" style="--c:var(--red)">TC</span>');
-  if (m.ivaAmt) tags.push(`<span class="pill">IVA ${m.iva}%</span>`);
-  if (m.t === 'venta' && m.costo) tags.push(`<span class="pill" style="--c:var(--green)">ganancia ${gsK(m.ganancia)}</span>`);
-  if (m.t === 'venta' && m.prov) tags.push(`<span class="pill" style="--c:var(--indigo)">${esc(m.prov)}</span>`);
-  if (m.t === 'venta' && m.cobrada === false) tags.push(`<span class="pill" style="--c:var(--orange)">por cobrar</span>`);
-  if (m.origen && loan(m.origen)) tags.push(`<span class="pill" style="--c:var(--${loan(m.origen).color})">plata del préstamo</span>`);
-  if (m.cuenta && m.t !== 'ajuste' && acctFlows(m).length) tags.push(`<span class="pill" style="--c:var(--${(acct(m.cuenta) || {}).color || 'gray'})">${esc(acctName(m.cuenta))}</span>`);
+  const mm = movMeta(m), bits = [], route = m.t === 'transf' || m.t === 'mover';
+  const title = route ? (m.t === 'transf' ? 'Transferencia' : 'Entre fondos') : mm.title;
+  if (route) bits.push(esc(mm.title));
+  const pill = m.t === 'venta' && m.cobrada === false ? '<span class="pill" style="--c:var(--orange)">Por cobrar</span>'
+    : m.medio === 'tc' ? '<span class="pill" style="--c:var(--red)">Tarjeta</span>' : '';
+  if (m.cuenta && m.t !== 'ajuste' && acctFlows(m).length) bits.push(esc(acctName(m.cuenta)));
+  else if (m.t === 'gasto' && m.medio !== 'tc' && MEDIO_L[m.medio]) bits.push(MEDIO_L[m.medio]);
+  if (m.t === 'venta' && m.costo) bits.push('ganancia ' + gsK(m.ganancia));
+  if (m.t === 'venta' && m.prov) bits.push(esc(m.prov));
+  if (m.t === 'transf' && m.fee) bits.push('comisión ' + gs(m.fee));
+  if (m.origen && loan(m.origen)) bits.push('plata del préstamo');
   const showNote = m.note && m.note !== mm.title && !(m.fijo && fijo(m.fijo) && m.note === fijo(m.fijo).name) && !['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t);
-  const sub = showNote ? esc(m.note) : m.t === 'gasto' ? (MEDIO_L[m.medio] || '') : '';
+  if (showNote) bits.push(esc(m.note));
+  if (m.ivaAmt) bits.push('IVA ' + m.iva + '%');
+  const sub = [pill, bits.join(' · ')].filter(Boolean).join(' ');
   const amt = m.t === 'cero' ? '' : (mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt);
-  return `<button class="cell" data-act="movDetail" data-id="${m.id}">${icoBox(mm.icon, mm.color)}<div class="tx"><div class="t">${esc(mm.title)}</div>
-    <div class="s">${tags.join(' ')} ${sub}</div></div><div class="v num ${mm.sign > 0 ? 'pos' : ''}">${amt}</div></button>`;
+  return `<button class="cell mov" data-act="movDetail" data-id="${m.id}">${icoBox(mm.icon, mm.color)}<div class="tx"><div class="t">${esc(title)}</div>
+    ${sub ? `<div class="s">${sub}</div>` : ''}</div><div class="v num ${mm.sign > 0 ? 'pos' : mm.sign === 0 ? 'dim' : ''}">${amt}</div></button>`;
 }
 function vMovs() {
-  const k = MK, sm = monthSummary(k);
-  const list = M.filter(m => ym(m.date) === k).filter(MF_FILTERS[MF]).sort(byDateDesc);
+  const k = MK, all = M.filter(m => ym(m.date) === k), sm = summaryOf(all);
+  const list = all.filter(MF_FILTERS[MF]).sort(byDateDesc);
   const days = {}; list.forEach(m => { (days[m.date] = days[m.date] || []).push(m); });
   const t = today(), y = dStr(new Date(Date.now() - 864e5));
   const dayL = d => d === t ? 'Hoy' : d === y ? 'Ayer' : DIAS_L[new Date(d + 'T12:00').getDay()] + ' ' + dLabel(d);
+  // A la derecha de cada día: el neto del día (con "Todos") o la suma de lo filtrado
+  const sgn = v => v ? (v > 0 ? '+' : '−') + fmt(Math.abs(v)) : '';
+  const dayTot = (d, ms) => sgn(MF === 'todos' ? summaryOf(all.filter(m => m.date === d)).neto : (MF === 'ingresos' ? 1 : -1) * sum(ms, m => m.amt));
   const mx = Math.max(sm.ingresos, sm.egresos, 1);
-  return `${lt('Movimientos', '', `<button class="icbtn" data-act="add" aria-label="Agregar">${sym('plus')}</button>`)}
-  <div class="monthnav"><button class="icbtn" data-act="mk" data-d="-1" aria-label="Mes anterior">${sym('left')}</button><b>${ymLabel(k)}</b><button class="icbtn" data-act="mk" data-d="1" aria-label="Mes siguiente" ${k >= ym(today()) ? 'disabled style="opacity:.3"' : ''}>${sym('right')}</button></div>
-  <div class="card">
-    <div class="io"><span>Entró</span><b class="num">${gs(sm.ingresos)}</b></div>
-    <div class="iobar"><i style="width:${(sm.ingresos / mx * 100).toFixed(1)}%"></i></div>
-    <div class="io mt"><span>Salió</span><b class="num">${gs(sm.egresos)}</b></div>
-    ${(() => { const parts = [['fijo', 'Gastos fijos', sm.gFijo], ['deuda', 'Cuotas de deudas', sm.deudas], ['vivir', 'Día a día', sm.gDia], ['neg', 'Negocio e IVA', sm.gNeg + sm.iva]];
-      return `<div class="segbar thin" style="width:${Math.max(2, sm.egresos / mx * 100).toFixed(1)}%" role="img" aria-label="${parts.map(p => p[1] + ' ' + gs(p[2])).join(', ')}">${parts.map(p => p[2] > 0 ? `<i class="sg sg-${p[0]}" style="width:${(p[2] / Math.max(sm.egresos, 1) * 100).toFixed(2)}%" title="${p[1]}: ${gs(p[2])}"></i>` : '').join('')}</div>
-      <div class="legend">${parts.map(p => `<span style="--c:var(--c-${p[0]})">${p[1]} <b>${gsK(p[2])}</b></span>`).join('')}</div>`; })()}
-    <div class="io net"><span>${sm.neto >= 0 ? 'Quedó a favor' : 'Salió de más'}</span><b class="num ${sm.neto < 0 ? 'neg' : 'pos'}">${sm.neto < 0 ? '−' : '+'}${gs(Math.abs(sm.neto))}</b></div>
-    <p class="gf" style="margin:8px 0 0">${[sm.ahorro ? `Ahorro y aportes: <b>${gs(sm.ahorro)}</b> (no es gasto)` : '', sm.hormiga ? `Gastos hormiga: <b>${gs(sm.hormiga)}</b> (dentro del día a día)` : '',
-      sm.tc || sm.pagotc ? `Compras con tarjeta: <b>${gs(sm.tc)}</b> (ya cuentan como gasto) · pagos de tarjeta: ${gs(sm.pagotc)}` : ''].filter(Boolean).join('. ') || 'Mes calendario. Tus sobres y pagos fijos se miden por ciclo de cobro, en Hoy.'}${sm.ahorro || sm.hormiga || sm.tc || sm.pagotc ? '.' : ''}</p>
+  const parts = [['fijo', 'Gastos fijos', sm.gFijo, 'Alquiler, servicios y lo que se repite'], ['deuda', 'Cuotas y ataques', sm.deudas, 'Lo que fue a tus préstamos'],
+    ['vivir', 'Día a día', sm.gDia, sm.hormiga ? 'Incluye ' + gs(sm.hormiga) + ' en gastos hormiga' : 'Súper, comida, transporte y gustos'], ['neg', 'Negocio e IVA', sm.gNeg + sm.iva, 'Proveedores, gastos del negocio e IVA']].filter(p => p[2] > 0);
+  const notes = [sm.ahorro ? `Ahorro y aportes: <b>${gs(sm.ahorro)}</b>, no cuentan como gasto` : '',
+    sm.tc ? `Compras con tarjeta: <b>${gs(sm.tc)}</b>, ya cuentan como gasto` : '', sm.pagotc ? `Pagos de tarjeta: <b>${gs(sm.pagotc)}</b>` : ''].filter(Boolean);
+  return `${lt('Movimientos', ymLabel(k), `<span class="mnav"><button class="icbtn" data-act="mk" data-d="-1" aria-label="Mes anterior">${sym('left')}</button><button class="icbtn" data-act="mk" data-d="1" aria-label="Mes siguiente" ${k >= ym(today()) ? 'disabled' : ''}>${sym('right')}</button></span>`)}
+  <div class="card herocard">
+    <div class="row between"><span class="cap">Balance del mes</span><span class="cap">${all.length} ${all.length === 1 ? 'movimiento' : 'movimientos'}</span></div>
+    <div class="cy-h">${!all.length ? 'Todavía sin movimientos' : sm.neto >= 0 ? 'Quedó a favor' : 'Salió de más'}</div>
+    <div class="hero num ${sm.neto < 0 ? 'neg' : ''}">${vu(fmt(Math.abs(sm.neto)))}</div>
+    <div class="iopair">
+      <div><div class="io"><span>Entró</span><b class="num">${gs(sm.ingresos)}</b></div>
+        <div class="iobar"><i style="width:${(sm.ingresos / mx * 100).toFixed(1)}%"></i></div></div>
+      <div><div class="io"><span>Salió</span><b class="num">${gs(sm.egresos)}</b></div>
+        <div class="iobar">${sm.egresos > 0 ? `<div class="segbar" style="width:${Math.max(2, sm.egresos / mx * 100).toFixed(1)}%" role="img" aria-label="${parts.map(p => p[1] + ' ' + gs(p[2])).join(', ')}">${parts.map(p => `<i class="sg sg-${p[0]}" style="width:${(p[2] / sm.egresos * 100).toFixed(2)}%" title="${p[1]}: ${gs(p[2])}"></i>`).join('')}</div>` : ''}</div></div>
+    </div>
+    ${parts.length ? `<div class="cyrows" style="margin-top:16px">${parts.map(p => `<div class="cyrow" style="cursor:default"><i class="swt sg-${p[0]}"></i><div class="tx">
+      <div class="row between"><span class="t">${p[1]}</span><span class="num">${gsK(p[2])} <small>${(p[2] / sm.egresos * 100).toFixed(0)}%</small></span></div><small>${p[3]}</small></div></div>`).join('')}</div>` : ''}
+    <p class="cy-foot">${notes.length ? notes.join('. ') + '.' : dcDay() > 1 ? 'Acá se cuenta por mes calendario. Tus sobres y gastos fijos van por ciclo de cobro, en Hoy.' : 'Cada movimiento que anotás suma acá.'}</p>
   </div>
   <div class="seg mt2">${segBtns('mf', 'mf', [['todos', 'Todos'], ['gastos', 'Gastos'], ['ingresos', 'Ingresos'], ['deudas', 'Deudas']], MF)}</div>
-  ${Object.keys(days).length ? Object.entries(days).map(([d, ms]) => `<div class="gh">${cap(dayL(d))}</div><div class="group ic">${ms.map(movRow).join('')}</div>`).join('')
-    : `<div class="card mt2 center"><span class="ico xl" style="--c:var(--gray);margin:0 auto">${sym('list')}</span><p class="s2 mt">Nada registrado${MF !== 'todos' ? ' con este filtro' : ''} en ${ymLabel(k)}.</p><button class="btn p mt" data-act="add">Registrar ahora</button></div>`}`;
+  ${Object.keys(days).length ? Object.entries(days).map(([d, ms]) => `<div class="gh dayh"><span>${cap(dayL(d))}</span><b class="num">${dayTot(d, ms)}</b></div><div class="group ic">${ms.map(movRow).join('')}</div>`).join('')
+    : `<div class="card mt2 center"><p class="s2">Nada registrado${MF !== 'todos' ? ' con este filtro' : ''} en ${ymLabel(k)}.</p><div class="caps" style="justify-content:center;margin-top:12px"><button class="btn soft" data-act="add">Registrar ahora</button></div></div>`}`;
 }
 
 /* =========================================================================
@@ -1559,7 +1576,7 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.10.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.11.0</p>`;
 }
 
 /* =========================================================================

@@ -278,8 +278,6 @@ input[type=range]{width:100%;accent-color:var(--blue)}
 .task input:checked::after{content:"";width:6px;height:11px;border:solid #fff;border-width:0 2.5px 2.5px 0;transform:translateY(-1px) rotate(45deg)}
 .task span{font-size:15px;line-height:1.4}
 .task.done span{color:var(--label2);text-decoration:line-through}
-.monthnav{display:flex;align-items:center;justify-content:space-between;margin:-4px 0 12px}
-.monthnav b{font-size:17px;font-weight:600;text-transform:capitalize}
 .ladder{display:flex;gap:6px;margin-top:12px}
 .ladder div{flex:1;text-align:center;font-size:10.5px;font-weight:600;color:var(--label2);min-width:0}
 .ladder div i{display:block;height:6px;border-radius:99px;background:var(--fill);margin-bottom:5px}
@@ -458,9 +456,16 @@ body.locked .dock,body.locked #app{visibility:hidden}
 .io{display:flex;justify-content:space-between;align-items:baseline;font-size:15px}
 .io span{color:var(--label2)}
 .io b{font-size:17px;font-weight:700}
-.io.net{margin-top:14px;padding-top:11px;border-top:.5px solid var(--sep)}
+.iopair{display:grid;gap:14px;margin-top:20px}
+.iopair+.cy-foot{margin-top:16px}
+.iobar .segbar{height:100%}
+.mnav{display:flex;gap:8px;flex:none}
+.mnav .icbtn:disabled{opacity:.3;cursor:default}
+.gh.dayh{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.dayh b{font-weight:500;letter-spacing:0;font-family:var(--num)}
+.cell.mov .s .pill{margin-right:2px;vertical-align:1px}
 .iobar{height:10px;border-radius:3px;background:var(--fill);margin-top:6px;overflow:hidden}
-.iobar i{display:block;height:100%;border-radius:3px;background:var(--green)}
+.iobar>i{display:block;height:100%;border-radius:3px;background:var(--green)}
 
 /* ---------- cuotas por mes (barras) ---------- */
 .chart{height:132px}
