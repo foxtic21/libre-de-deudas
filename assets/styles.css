@@ -376,6 +376,65 @@ body.locked .dock,body.locked #app{visibility:hidden}
 #net.on{transform:translate(-50%,0)}
 #net svg.i{width:15px;height:15px;stroke-width:2.3;flex:none}
 
+/* ---------- colores de los gráficos (validados para daltonismo, en claro y oscuro) ----------
+   fijo = gastos fijos · deuda = cuotas y tarjeta · vivir = día a día · neg = negocio */
+:root{--c-fijo:#007aff;--c-deuda:#e98600;--c-vivir:#2a9db3;--c-neg:#af52de}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--c-fijo:#2f8cff;--c-deuda:#d67a00;--c-vivir:#2a9db3;--c-neg:#a45bd0}}
+:root[data-theme=dark]{--c-fijo:#2f8cff;--c-deuda:#d67a00;--c-vivir:#2a9db3;--c-neg:#a45bd0}
+.sg-fijo{background:var(--c-fijo);color:#fff}
+.sg-deuda{background:var(--c-deuda);color:#1c1c1e}
+.sg-vivir{background:var(--c-vivir);color:#1c1c1e}
+.sg-neg{background:var(--c-neg);color:#fff}
+.sg-libre{background:var(--fill2);color:var(--label)}
+
+/* ---------- tu ciclo de cobro (tarjeta principal de Hoy) ---------- */
+.cycle{margin-bottom:6px}
+.cycle .k-head{color:var(--label2)}
+.cycle .bignum{margin-top:10px}
+.cy-h{font-size:15px;color:var(--label2);margin-top:-1px}
+.segwrap{position:relative;margin:16px 0 26px}
+.segbar{display:flex;gap:2px;height:28px}
+.segbar .sg{display:flex;align-items:center;min-width:3px;border-radius:4px;padding-left:7px;font-style:normal;overflow:hidden}
+.segbar .sg b{font-size:12px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.segbar.thin{height:10px;margin-top:6px}
+.segbar.thin .sg{padding:0;border-radius:3px}
+.segtick{position:absolute;top:-5px;bottom:-5px;width:2px;margin-left:-1px;background:var(--label);border-radius:2px}
+.segtick em{position:absolute;top:100%;left:50%;transform:translateX(-50%);margin-top:3px;font-style:normal;font-size:11px;color:var(--label2);white-space:nowrap}
+.segtick.r em{left:auto;right:0;transform:none}
+.segtick.l em{left:0;transform:none}
+.cyrow{display:flex;align-items:flex-start;gap:10px;width:100%;border:0;background:none;font:inherit;color:inherit;text-align:left;padding:11px 0;cursor:pointer}
+.cyrow+.cyrow{border-top:.5px solid var(--sep)}
+.cyrow .swt{width:10px;height:10px;border-radius:3px;margin-top:6px;flex:none}
+.cyrow .tx{flex:1;min-width:0}
+.cyrow .t{font-weight:600}
+.cyrow .num{font-size:15px;font-weight:600;flex:none}
+.cyrow .num small{font-weight:400;font-size:13px}
+.cyrow .bar{margin:7px 0 5px;height:6px}
+.cyrow .tx>small{display:block;font-size:13px;line-height:1.35}
+.cyrow .chev{margin-top:7px}
+.cy-foot{font-size:13px;color:var(--label2);line-height:1.4;margin-top:6px;padding-top:10px;border-top:.5px solid var(--sep)}
+.pago .s{white-space:normal}
+.pago .btn{flex:none}
+.rdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.rings .s2{color:rgba(255,255,255,.55);font-weight:500}
+.rings .leg .v .s2{font-size:13px}
+.rings .leg .t{white-space:nowrap}
+
+/* ---------- movimientos: entró / salió ---------- */
+.io{display:flex;justify-content:space-between;align-items:baseline;font-size:15px}
+.io span{color:var(--label2)}
+.io b{font-size:17px;font-weight:700}
+.io.net{margin-top:14px;padding-top:11px;border-top:.5px solid var(--sep)}
+.iobar{height:10px;border-radius:3px;background:var(--fill);margin-top:6px;overflow:hidden}
+.iobar i{display:block;height:100%;border-radius:3px;background:var(--green)}
+
+/* ---------- cuotas por mes (barras) ---------- */
+.chart{height:132px}
+.chart button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%;min-width:0;border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
+.chart button em{font-style:normal;font-size:10px;font-weight:600;color:var(--label);white-space:nowrap;font-variant-numeric:tabular-nums;min-height:12px}
+.chart button i{max-width:24px;border-radius:4px 4px 0 0;background:var(--c-deuda)}
+.chart button:active i{opacity:.7}
+
 /* ---------- coach ---------- */
 .coach .cell{align-items:flex-start;padding-top:12px;padding-bottom:12px}
 .coach .t{white-space:normal;font-weight:600;font-size:16px}

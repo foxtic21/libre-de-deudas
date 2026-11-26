@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.7.0';
+import * as Store from './store.js?v=2.8.0';
 
 /* =========================================================================
    Utilidades
@@ -356,20 +356,29 @@ const fijo = id => S.fijos.find(f => f.id === id);
 const dueDate = (k, dia) => k + '-' + pad(Math.min(dia || 1, lastDay(k)));
 // Ciclo de cobro: del día de cobro de un mes al día anterior del siguiente (ej.: 25 nov → 24 dic).
 // Lo que pagás con el sueldo del 25 cubre lo que vence hasta el próximo cobro.
-const dcDay = () => S.settings.diaCobro || 25;
+// Sin día de cobro configurado, el ciclo es el mes calendario (día 1).
+const dcDay = () => S.settings.diaCobro || 1;
 const cycleOf = d => { const k = ym(d); return +d.slice(8) >= Math.min(dcDay(), lastDay(k)) ? k : addMonth(k, -1); };
 const cycleStart = k => dueDate(k, dcDay());
+const cycleNext = k => cycleStart(addMonth(k, 1));                                        // el próximo cobro
+const cycleLast = k => dStr(new Date(new Date(cycleNext(k) + 'T12:00') - 864e5));         // último día del ciclo
+const cycleLen = k => daysBetween(cycleStart(k), cycleNext(k));
+const cycleLabel = k => dcDay() === 1 ? ymLabel(k) : dLabel(cycleStart(k)) + ' – ' + dLabel(cycleLast(k));
+const curCycle = () => cycleOf(today());
+const mCycle = m => m.ciclo || cycleOf(m.date);                                           // ciclo al que pertenece un movimiento
 const dueInCycle = (k, dia) => (dia || 1) >= dcDay() ? dueDate(k, dia) : dueDate(addMonth(k, 1), dia);
-const planCycle = () => cycleOf(dStr(new Date(Date.now() + 5 * 864e5))); // 5 días antes del cobro ya se planifica el ciclo nuevo
-const fijoCycle = f => { let k = planCycle(); if (f.desde && dueInCycle(k, f.dia) < f.desde) k = addMonth(k, 1); return k; };
-const fijoPaid = (f, k = fijoCycle(f)) => M.find(m => (m.t === 'gasto' || m.t === 'aporte') && m.fijo === f.id && (m.ciclo || cycleOf(m.date)) === k);
+// Ciclo que le toca a un gasto fijo (si lo creaste después de su vencimiento, arranca en el siguiente)
+const fijoCycle = (f, base = curCycle()) => { let k = base; if (f.desde && dueInCycle(k, f.dia) < f.desde) k = addMonth(k, 1); return k; };
+const fijoPaid = (f, k = fijoCycle(f)) => M.find(m => (m.t === 'gasto' || m.t === 'aporte') && m.fijo === f.id && mCycle(m) === k);
+const fijosOf = cat => S.fijos.filter(f => f.amb === 'personal' && f.cat === cat);
 
 // Gastos hormiga: compras personales chicas (no fijas) que se repiten y se comen el sueldo sin que se note
 const hormigaMax = () => S.settings.hormiga || 50000;
-const hormigas = (k = ym(today())) => M.filter(m => m.t === 'gasto' && m.ambito !== 'negocio' && !m.fijo && m.amt <= hormigaMax() && ym(m.date) === k);
-function hormigaStats(k = ym(today())) {
-  const hs = hormigas(k), tot = sum(hs, m => m.amt), cur = k === ym(today());
-  const days = cur ? new Date().getDate() : lastDay(k), proj = cur && days ? Math.round(tot / days * lastDay(k)) : tot;
+const esHormiga = m => m.t === 'gasto' && m.ambito !== 'negocio' && !m.fijo && m.amt <= hormigaMax();
+const hormigas = (k = curCycle()) => M.filter(m => esHormiga(m) && mCycle(m) === k);
+function hormigaStats(k = curCycle()) {
+  const hs = hormigas(k), tot = sum(hs, m => m.amt), cur = k === curCycle();
+  const len = cycleLen(k), days = cur ? clamp(daysBetween(cycleStart(k), today()) + 1, 1, len) : len, proj = cur ? Math.round(tot / days * len) : tot;
   const by = {}; hs.forEach(m => { by[m.cat] = by[m.cat] || { n: 0, a: 0 }; by[m.cat].n++; by[m.cat].a += m.amt; });
   const cats = Object.entries(by).map(([id, v]) => Object.assign({ id, b: S.budget.find(x => x.id === id) }, v)).sort((a, b) => b.a - a.a);
   return { hs, tot, n: hs.length, proj, cats, prev: sum(hormigas(addMonth(k, -1)), m => m.amt) };
@@ -388,8 +397,8 @@ function syncFijoSobres() {
     if (fs.length) b.amt = sum(fs, f => f.amt);
   });
 }
-// Día de cobro: el cobro de este ciclo y el siguiente
-function payWindow() { const k = planCycle(); return { dc: dcDay(), pay: cycleStart(k), next: cycleStart(addMonth(k, 1)), mk: k }; }
+// Ventana de un ciclo: desde su cobro hasta el cobro siguiente
+function payWindow(k = curCycle()) { return { dc: dcDay(), pay: cycleStart(k), next: cycleNext(k), mk: k }; }
 // Ventas que todavía no te pagaron (cuentas por cobrar)
 const receivables = () => M.filter(m => m.t === 'venta' && m.cobrada === false).sort(byDateDesc);
 
@@ -466,9 +475,10 @@ const projection = () => sim().fin;
 const loanFreeMonth = id => { const m = sim().months.find(x => x.killIds.includes(id)); return m ? m.k : null; };
 const cardFreeMonth = () => { if (cardDebt() <= 0) return null; const m = sim().months.find(x => x.cardDone); return m ? m.k : null; };
 const inMonth = (k, types) => M.filter(m => ym(m.date) === k && (!types || types.includes(m.t)));
-function monthSpent(cat, k = ym(today())) {
-  if (cat === 'cuotas') return sum(inMonth(k, ['cuota']), m => m.amt);
-  return sum(M.filter(m => m.t === 'gasto' && m.ambito !== 'negocio' && m.cat === cat && ym(m.date) === k), m => m.amt);
+// Gastado en un sobre durante un ciclo de cobro (del día de cobro al anterior del siguiente)
+function monthSpent(cat, k = curCycle()) {
+  if (cat === 'cuotas') return sum(M.filter(m => m.t === 'cuota' && mCycle(m) === k), m => m.amt);
+  return sum(M.filter(m => m.t === 'gasto' && m.ambito !== 'negocio' && m.cat === cat && mCycle(m) === k), m => m.amt);
 }
 const factMonth = k => sum(inMonth(k, ['venta']), m => m.amt);
 const ganancia = m => m.ganancia ?? m.neto ?? m.amt;
@@ -484,11 +494,12 @@ function monthSummary(k) {
   const deudas = sum(f(m => ['cuota', 'ataque', 'precancel'].includes(m.t)), m => m.amt);
   const iva = sum(f(m => m.t === 'pagoiva'), m => m.amt);
   const ahorro = sum(f(m => m.t === 'aporte'), m => m.amt);
-  const hormiga = sum(hormigas(k), m => m.amt);
+  const hormiga = sum(f(esHormiga), m => m.amt);
+  const gFijo = sum(f(m => m.t === 'gasto' && m.ambito !== 'negocio' && m.fijo), m => m.amt);
   const tc = sum(f(m => m.t === 'gasto' && m.medio === 'tc'), m => m.amt);
   const pagotc = sum(f(m => m.t === 'pagotc'), m => m.amt);
   const egresos = gPers + gNeg + deudas + iva;
-  return { ingresos, gPers, gNeg, deudas, iva, tc, pagotc, egresos, ahorro, hormiga, neto: ingresos - egresos };
+  return { ingresos, gPers, gFijo, gDia: gPers - gFijo, gNeg, deudas, iva, tc, pagotc, egresos, ahorro, hormiga, neto: ingresos - egresos };
 }
 function ivaMonth(k) {
   const ms = M.filter(m => ym(m.date) === k);
@@ -500,10 +511,11 @@ function ivaMonth(k) {
   };
 }
 function ivaDue(per) { const v = ivaMonth(per); return Math.max(0, v.deb - v.cred - sum(M.filter(m => m.t === 'pagoiva' && m.periodo === per), m => m.amt)); }
+// Lo que queda en los sobres del día a día hasta el próximo cobro
 function varLeft() {
-  const k = ym(today());
+  const k = curCycle();
   const left = sum(S.budget.filter(b => !b.fijo), b => Math.max(0, b.amt - monthSpent(b.id, k)));
-  const d = new Date(); const daysLeft = lastDay(k) - d.getDate() + 1;
+  const daysLeft = Math.max(1, daysBetween(today(), cycleNext(k)));
   return { left, perDay: left / daysLeft, daysLeft };
 }
 function streak() {
@@ -512,20 +524,22 @@ function streak() {
   while (set.has(dStr(d))) { n++; d.setDate(d.getDate() - 1); }
   return n;
 }
-// Lo que vos aplicaste a deudas en el mes vs. lo que pide el plan
-function appliedMonth(k = ym(today())) {
-  const due = sum(S.loans, l => sum(l.cuotas.filter(c => ym(c.d) === k), c => c.o));
-  const lump = S.settings.lumpMes === k ? S.settings.lump : 0;
-  return { done: sum(inMonth(k, ['cuota', 'ataque', 'precancel', 'pagotc']), m => m.amt), target: due + S.settings.ataqueMensual + lump };
+// Lo que vos aplicaste a deudas en el ciclo de cobro vs. lo que pide el plan
+// (cuotas que vencen antes del próximo cobro + ataque mensual + aguinaldo si cae en este ciclo)
+function appliedMonth(k = curCycle()) {
+  const a = cycleStart(k), b = cycleNext(k), st = S.settings;
+  const due = sum(S.loans, l => sum(l.cuotas.filter(c => c.d >= a && c.d < b), c => c.o));
+  const lump = st.lump && st.lumpMes && cycleOf(st.lumpMes + '-20') === k ? st.lump : 0;
+  return { done: sum(M.filter(m => ['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t) && mCycle(m) === k), m => m.amt), target: due + st.ataqueMensual + lump };
 }
 function rings(k = ym(today())) {
-  const ap = appliedMonth(k), fact = factMonth(k), meta = S.settings.metaFacturacion;
+  const ap = appliedMonth(), fact = factMonth(k), meta = S.settings.metaFacturacion;
   const days = k === ym(today()) ? new Date().getDate() : lastDay(k);
-  const reg = S.checkins.filter(c => ym(c) === k).length;
+  const reg = S.checkins.filter(c => ym(c) === k).length, mes = MESES_L[+k.slice(5) - 1];
   return [
-    { name: 'Ataque a la deuda', color: '#fa114f', p: ap.target ? ap.done / ap.target : 0, a: gsK(ap.done), b: gsK(ap.target) },
-    { name: 'Facturación', color: '#a6ff00', p: meta ? fact / meta : 0, a: gsK(fact), b: gsK(meta) },
-    { name: 'Hábito', color: '#00e5ff', p: days ? reg / days : 0, a: reg, b: days + ' días' }
+    { name: 'Ataque a la deuda', per: 'este ciclo', color: '#fa114f', p: ap.target ? ap.done / ap.target : 0, a: gsK(ap.done), b: gsK(ap.target) },
+    { name: 'Facturación', per: mes, color: '#a6ff00', p: meta ? fact / meta : 0, a: gsK(fact), b: gsK(meta) },
+    { name: 'Hábito de anotar', per: mes, color: '#00e5ff', p: days ? reg / days : 0, a: reg, b: days + ' días' }
   ];
 }
 function travelPlan() {
@@ -586,9 +600,9 @@ function checkAch() {
   if (['t1', 't2', 't3'].every(t => S.tasks[t])) unlock('asesor');
   if (debtBudget() > 0 && rings().every(r => r.p >= 1)) unlock('anillos');
   if (S.goals.some(g => g.kind === 'viaje' && g.target && g.saved >= g.target)) unlock('viajero');
-  const prev = addMonth(ym(today()), -1);
+  const prev = addMonth(curCycle(), -1);
   const vars = S.budget.filter(b => !b.fijo && b.amt > 0);
-  if (vars.length && M.some(m => m.t === 'gasto' && ym(m.date) === prev) && !vars.some(b => monthSpent(b.id, prev) > b.amt)) unlock('sobre');
+  if (vars.length && M.some(m => m.t === 'gasto' && mCycle(m) === prev) && !vars.some(b => monthSpent(b.id, prev) > b.amt)) unlock('sobre');
 }
 function checkin() { const t = today(); if (!S.checkins.includes(t)) S.checkins.push(t); if (S.checkins.length > 500) S.checkins = S.checkins.slice(-500); }
 
@@ -758,15 +772,26 @@ function vHoy() {
   const fin = projection(), sinPlan = noPlanEnd(), gain = monthsDiff(fin, sinPlan);
   const vl = varLeft(), tgt = attackOrder().list[0], rs = rings(), d = new Date(), ini = initials();
   const hasDebt = S.loans.length || S.cards.length;
+  // Orden de la pantalla: 1) cómo va tu ciclo de cobro, 2) qué falta pagar, 3) anotar, 4) consejos, 5) dónde está la plata, 6) la deuda, 7) el juego
   return `
   ${lt('Hoy', DIAS_L[d.getDay()] + ' ' + d.getDate() + ' de ' + MESES_L[d.getMonth()], `<button class="avatar" data-act="tab" data-tab="plan" aria-label="Plan y cuenta">${ini ? esc(ini) : sym('person')}</button>`)}
   ${setupCard()}
-  ${cobroCard()}
-  <div class="rankrow"><div class="row"><span class="rkic">${sym(r[2])}</span><div><div class="rk">${r[1]}</div><small>Nivel ${lv} · ${fmt(S.xp)} XP · faltan ${250 - S.xp % 250} para el ${lv + 1}</small></div></div>
-    <span class="pill lg" style="--c:var(--orange)">${sym('flame')}${st}</span></div>
-  ${bar((S.xp % 250) / 2.5, 'xp')}
-  <div class="rings">${ringsSvg(rs)}<div class="leg">${rs.map(x => `<div><div class="t">${x.name}</div><div class="v" style="color:${x.color}">${x.a}<small> / ${x.b}</small></div></div>`).join('')}</div></div>
-  ${hasDebt ? `<button class="hp" data-act="tab" data-tab="batalla">
+  ${cycleCard()}
+  ${nextCobroCard()}
+  ${pagosSection()}
+  <div class="qa">
+    <button data-act="add" data-t="gasto" style="--c:var(--red)"><span>${sym('minus')}</span>Gasto</button>
+    <button data-act="add" data-t="ingreso" style="--c:var(--green)"><span>${sym('arrowDown')}</span>Ingreso</button>
+    <button data-act="add" data-t="venta" style="--c:var(--indigo)"><span>${sym('bag')}</span>Venta</button>
+    <button data-act="cero" style="--c:var(--teal)"><span>${sym('leaf')}</span>No gasté</button>
+  </div>
+  <div class="g2 mt">
+    ${tile({ k: 'Hoy podés gastar', icon: 'calendar', color: 'blue', value: fmt(vl.perDay), vcolor: vl.perDay < 30000 ? 'var(--red)' : '', foot: gsK(vl.left) + ' para ' + vl.daysLeft + (vl.daysLeft === 1 ? ' día' : ' días'), act: 'sobres' })}
+    ${tile({ k: 'Cofre de ataque', icon: 'coins', color: 'orange', value: fmt(S.funds.cofre), foot: 'Colchón ' + gsK(goal('colchon').saved) + ' · Caja ' + gsK(goal('emprender').saved), act: 'moveFund' })}
+  </div>
+  ${coachSection()}
+  ${acctSection()}
+  ${hasDebt ? sh('Tu deuda', '<button class="link" data-act="tab" data-tab="batalla">Ver batalla</button>') + `<button class="hp" data-act="tab" data-tab="batalla">
     <div class="k">Vida total de la deuda</div>
     <div class="n">${vu(fmt(tot))}</div>
     ${bar(100 - p, 'hpbar lg')}
@@ -775,54 +800,159 @@ function vHoy() {
     <div class="g2"><div><div class="k">Libre de deudas</div><div class="m">${isFree() ? '¡Ya!' : ymLabel(fin)}</div></div><div><div class="k">Sin el plan</div><div class="m" style="opacity:.6">${ymLabel(sinPlan)}</div></div></div>
     ${gain > 0 ? `<div class="gain">El plan te libera ${gain} ${gain === 1 ? 'mes' : 'meses'} antes · ver hoja de ruta</div>` : ''}
   </button>` : ''}
-  <div class="g2 mt">
-    ${tile({ k: 'Hoy podés gastar', icon: 'calendar', color: 'blue', value: fmt(vl.perDay), vcolor: vl.perDay < 30000 ? 'var(--red)' : '', foot: gsK(vl.left) + ' en ' + vl.daysLeft + ' días' })}
-    ${tile({ k: 'Cofre de ataque', icon: 'coins', color: 'orange', value: fmt(S.funds.cofre), foot: 'Colchón ' + gsK(goal('colchon').saved) + ' · Caja ' + gsK(goal('emprender').saved) })}
-  </div>
-  <div class="qa">
-    <button data-act="add" data-t="gasto" style="--c:var(--red)"><span>${sym('minus')}</span>Gasto</button>
-    <button data-act="add" data-t="ingreso" style="--c:var(--green)"><span>${sym('arrowDown')}</span>Ingreso</button>
-    <button data-act="add" data-t="venta" style="--c:var(--indigo)"><span>${sym('bag')}</span>Venta</button>
-    <button data-act="cero" style="--c:var(--teal)"><span>${sym('leaf')}</span>No gasté</button>
-  </div>
-  ${coachSection()}
-  ${acctSection()}
-  ${tgt ? sh('Jefe actual', '<button class="link" data-act="tab" data-tab="batalla">Ver todos</button>') + bossCard(tgt, true)
+  ${tgt ? `<div class="gh">Jefe actual</div>` + bossCard(tgt, true)
     : (S.loans.length ? `<div class="card mt2 center"><span class="ico xl" style="--c:var(--yellow);margin:0 auto">${sym('crown')}</span><h3 class="mt">No quedan préstamos</h3><small>Los viajes están desbloqueados en Plan.</small></div>` : '')}
-  ${hasDebt ? sh('Próximos vencimientos') + `<div class="group ic">${upcoming() || '<div class="cell"><small>Nada pendiente.</small></div>'}</div>` : ''}
-  ${sh('Logros', `<small>${Object.keys(S.ach).length}/${ACH.length}</small>`)}
+  ${sh('Tu progreso', '<button class="link" data-act="guide">Cómo usar la app</button>')}
+  <div class="card">
+    <div class="rankrow" style="margin:0 0 8px"><div class="row"><span class="rkic">${sym(r[2])}</span><div><div class="rk">${r[1]}</div><small>Nivel ${lv} · ${fmt(S.xp)} XP · faltan ${250 - S.xp % 250} para el ${lv + 1}</small></div></div>
+      <span class="pill lg" style="--c:var(--orange)" title="Días seguidos anotando">${sym('flame')}${st}</span></div>
+    ${bar((S.xp % 250) / 2.5, 'xp')}
+    <div class="rings" style="margin-bottom:0">${ringsSvg(rs)}<div class="leg">${rs.map(x => `<div><div class="t"><i class="rdot" style="background:${x.color}"></i>${x.name} <span class="s2">· ${x.per}</span></div><div class="v">${x.a}<small> de ${x.b}</small> <span class="s2">· ${Math.round(clamp(x.p, 0, 9.99) * 100)}%</span></div></div>`).join('')}</div></div>
+  </div>
+  <div class="gh">Logros · ${Object.keys(S.ach).length} de ${ACH.length}</div>
   <div class="card"><div class="medals">${ACH.map(a => `<button class="medal ${S.ach[a[0]] ? 'on' : ''}" data-act="achInfo" data-id="${a[0]}" style="--c:var(--${ACH_COLOR[a[0]]})"><b>${sym(a[1])}</b>${esc(a[2])}</button>`).join('')}</div></div>`;
 }
-function cobroCard() {
+/* ---------- Tu ciclo de cobro: de lo que cobraste, qué pagaste, qué falta y qué queda para vivir ---------- */
+function cycleData(k = curCycle()) {
+  const { w, items } = cobroItems(k), st = S.settings, inK = m => mCycle(m) === k;
+  // Ingresos del ciclo: lo cobrado menos lo que mandaste a fondos (cofre, colchón, caja)
+  const ins = M.filter(m => m.t === 'ingreso' && inK(m));
+  const cobrado = sum(ins, m => m.amt - sum(Object.values(m.split || {})));
+  const estimado = !ins.length, income = estimado ? st.base : cobrado;
+  const fixedIds = new Set(S.budget.filter(b => b.fijo && b.id !== 'cuotas').map(b => b.id));
+  // Fijos: lo gastado en sobres fijos (alquiler, servicios) + fijos del negocio y aportes
+  const fijosDone = sum(M.filter(m => inK(m) && ((m.t === 'gasto' && m.ambito !== 'negocio' && fixedIds.has(m.cat)) || (m.fijo && (m.t === 'aporte' || m.ambito === 'negocio')))), m => m.amt);
+  const fijosPend = sum(items.filter(x => x.grp === 'fijos'), x => x.a);
+  const pays = M.filter(m => inK(m) && ['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t));
+  const deudaDone = sum(pays, m => m.amt), cofreUsado = sum(pays, m => m.fromCofre || 0);
+  const deudaPend = sum(items.filter(x => x.grp === 'deudas'), x => x.a);
+  const vars = S.budget.filter(b => !b.fijo);
+  const vivirDone = sum(vars, b => monthSpent(b.id, k)), vivirLeft = sum(vars, b => Math.max(0, b.amt - monthSpent(b.id, k)));
+  // Gastos del negocio pagados con plata personal (no de la caja ni con tarjeta) y que no son fijos
+  const otros = sum(M.filter(m => inK(m) && m.t === 'gasto' && m.ambito === 'negocio' && m.medio === 'debito' && !m.fijo), m => m.amt);
+  const total = fijosDone + fijosPend + deudaDone + deudaPend + vivirDone + vivirLeft + otros, disp = income + cofreUsado;
+  const len = cycleLen(k);
+  return { k, w, items, income, estimado, cofreUsado, disp, fijosDone, fijosPend, deudaDone, deudaPend, vivirDone, vivirLeft, vivirBud: sum(vars, b => b.amt), otros, total, saldo: disp - total,
+    len, day: clamp(daysBetween(w.pay, today()) + 1, 1, len), daysLeft: Math.max(0, daysBetween(today(), w.next)) };
+}
+function cycleCard() {
+  if (!S.settings.base && !S.fijos.length && !M.length) return '';
+  const c = cycleData(), falta = c.saldo < 0, cofre = Math.max(0, S.funds.cofre), scale = Math.max(c.total, c.disp, 1);
+  const groups = [
+    { id: 'fijo', name: 'Gastos fijos', done: c.fijosDone, pend: c.fijosPend, act: 'cobro' },
+    { id: 'deuda', name: 'Cuotas y tarjeta', done: c.deudaDone, pend: c.deudaPend, act: 'cobro' },
+    { id: 'vivir', name: 'Para vivir', done: c.vivirDone, pend: c.vivirLeft, act: 'sobres' }
+  ].concat(c.otros ? [{ id: 'neg', name: 'Negocio, de tu bolsillo', done: c.otros, pend: 0, act: 'tab', tab: 'negocio' }] : []);
+  // Barra: cada bloque es una parte de lo comprometido; la marca muestra hasta dónde llega lo que cobraste
+  const seg = g => { const v = g.done + g.pend, pc = v / scale * 100; return v > 0 ? `<i class="sg sg-${g.id}" style="width:${pc.toFixed(2)}%" title="${g.name}: ${gs(v)}">${pc >= 16 ? `<b>${gsK(v)}</b>` : ''}</i>` : ''; };
+  const libre = c.saldo > 0 ? `<i class="sg sg-libre" style="width:${(c.saldo / scale * 100).toFixed(2)}%" title="Te sobra: ${gs(c.saldo)}">${c.saldo / scale >= .16 ? `<b>${gsK(c.saldo)}</b>` : ''}</i>` : '';
+  const pendF = c.items.filter(x => x.grp === 'fijos'), pendD = c.items.filter(x => x.grp === 'deudas'), nF = S.fijos.filter(f => fijoCycle(f, c.k) === c.k).length;
+  const perDay = c.daysLeft ? c.vivirLeft / c.daysLeft : c.vivirLeft;
+  const note = {
+    fijo: pendF.length ? 'Falta: ' + pendF.slice(0, 2).map(x => esc(x.t) + ' ' + gsK(x.a)).join(', ') + (pendF.length > 2 ? ' y ' + (pendF.length - 2) + ' más' : '') : nF ? 'Todos pagados' : 'Cargá tus gastos fijos en Plan',
+    deuda: pendD.length ? 'Falta: ' + pendD.slice(0, 2).map(x => esc(x.t) + ' ' + gsK(x.a)).join(', ') + (pendD.length > 2 ? ' y ' + (pendD.length - 2) + ' más' : '') : 'Nada pendiente hasta el próximo cobro',
+    vivir: c.vivirDone > c.vivirBud ? 'Te pasaste de tus sobres por ' + gs(c.vivirDone - c.vivirBud) : 'Te quedan ' + gs(c.vivirLeft) + ' · ' + gsK(perDay) + ' por día',
+    neg: 'Gastos del negocio que pagaste con tu plata'
+  };
+  const row = g => { const v = g.done + g.pend, pc = v ? g.done / v * 100 : 0;
+    return `<button class="cyrow" data-act="${g.act}"${g.tab ? ` data-tab="${g.tab}"` : ''}><i class="swt sg-${g.id}"></i><div class="tx">
+      <div class="row between"><span class="t">${g.name}</span><span class="num">${gsK(g.done)} <small>de ${gsK(v)}</small></span></div>
+      <div class="bar" style="--c:var(--c-${g.id})"><i style="width:${clamp(pc, 0, 100).toFixed(1)}%"></i></div>
+      <small>${g.id === 'vivir' ? 'Gastado' : 'Pagado'} ${pc.toFixed(0)}% · ${note[g.id]}</small></div>${CHEV}</button>`; };
+  const sub = c.estimado ? `Todavía no anotaste tu cobro de este ciclo: uso tu sueldo base (${gs(c.income)}).`
+    : `Cobraste ${gs(c.income)}${c.cofreUsado ? ' + ' + gsK(c.cofreUsado) + ' del cofre' : ''} · comprometido ${gs(c.total)}.`;
+  const tip = falta ? (cofre >= -c.saldo ? `Con el cofre (${gsK(cofre)}) lo cubrís y te quedan ${gs(cofre + c.saldo)}.` : cofre ? `Usando el cofre (${gsK(cofre)}) todavía faltan ${gs(-c.saldo - cofre)}: recortá sobres o sumá ventas.` : 'Recortá sobres o sumá ventas para cubrirlo.')
+    : c.saldo > 0 ? 'Cubrís todo el ciclo. Lo que sobra va al cofre, no a gastos.' : 'Cubrís todo el ciclo justo.';
+  return `<div class="card cycle">
+    <div class="row between"><div class="k-head">${sym('calendar')}Tu ciclo · ${cycleLabel(c.k)}</div><small>día ${c.day} de ${c.len}</small></div>
+    <div class="bignum num ${falta ? 'neg' : c.saldo > 0 ? 'pos' : ''}">${vu(fmt(Math.abs(c.saldo)))}</div>
+    <div class="cy-h">${falta ? 'te faltan para cubrir el ciclo' : c.saldo > 0 ? 'te sobran en este ciclo' : 'ciclo cubierto'}</div>
+    <div class="segwrap"><div class="segbar" role="img" aria-label="${groups.map(g => g.name + ' ' + gs(g.done + g.pend)).join(', ')}${c.saldo > 0 ? ', sobra ' + gs(c.saldo) : ''}">${groups.map(seg).join('')}${libre}</div>
+      ${falta && c.disp > 0 ? `<span class="segtick ${c.disp / scale > .75 ? 'r' : c.disp / scale < .25 ? 'l' : ''}" style="left:${(c.disp / scale * 100).toFixed(2)}%"><em>${c.estimado ? 'hasta acá llega tu sueldo' : 'hasta acá llega lo que cobraste'}</em></span>` : ''}</div>
+    <div class="cyrows">${groups.map(row).join('')}</div>
+    <p class="cy-foot">${sub} ${tip}</p>
+    ${c.estimado ? `<button class="btn sm p mt" style="--c:var(--green)" data-act="add" data-t="ingreso">${sym('arrowDown')}Anotar mi cobro</button>` : ''}
+  </div>`;
+}
+// Los últimos 5 días antes de cobrar: planificar el ciclo que viene
+function nextCobroCard() {
   if (!S.settings.base && !S.fijos.length) return '';
-  const { w, items } = cobroItems(), dd = daysBetween(today(), w.pay), tot = sum(items, x => x.a);
-  const when = dd < 0 ? 'Cobraste el ' + dLabel(w.pay) : dd === 0 ? 'Cobrás hoy' : dd === 1 ? 'Cobrás mañana' : 'Cobrás el ' + dLabel(w.pay);
-  return `<button class="card cobrocard" data-act="cobro">${icoBox('calendar', 'green', 'lg')}<div class="grow">
-    <div class="k-head" style="color:var(--green)">${when}${S.settings.diaCobro ? '' : ' (día 25)'}</div>
-    <div class="t">${items.length ? items.length + (items.length === 1 ? ' pago' : ' pagos') + ' antes del ' + dLabel(w.next) + ' · ' + gsK(tot) : 'Todo pagado hasta el próximo cobro'}</div>
-    <small>${S.fijos.length ? 'Ver el plan de pagos en orden' : 'Cargá tus gastos fijos en Plan para completar el plan'}</small></div>${CHEV}</button>`;
+  const k = curCycle(), dd = daysBetween(today(), cycleNext(k)); if (dd > 5) return '';
+  return `<button class="card cobrocard" data-act="cobro" data-k="next">${icoBox('calendar', 'green', 'lg')}<div class="grow">
+    <div class="k-head" style="color:var(--green)">Cobrás ${dd <= 0 ? 'hoy' : dd === 1 ? 'mañana' : 'en ' + dd + ' días'} · ${dLabel(cycleNext(k))}</div>
+    <div class="t">Planificá el próximo ciclo</div><small>Qué vas a pagar con ese sueldo, en orden</small></div>${CHEV}</button>`;
+}
+// Lo pagado en un ciclo (fijos, cuotas, ataques y tarjeta)
+const paidInCycle = k => M.filter(m => mCycle(m) === k && (m.fijo || ['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t))).sort(byDateDesc);
+function pagosSection() {
+  const k = curCycle(), { items } = cobroItems(k), paid = paidInCycle(k);
+  if (!items.length && !paid.length) return '';
+  const row = x => { const dd = daysBetween(today(), x.d), col = dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'label2';
+    const txt = dd < 0 ? 'vencido hace ' + (-dd) + (dd === -1 ? ' día' : ' días') : dd === 0 ? 'vence hoy' : dd === 1 ? 'vence mañana' : 'vence el ' + dLabel(x.d);
+    return `<div class="cell pago">${icoBox(x.icon, x.color)}<div class="tx"><div class="t">${esc(x.t)}</div><div class="s"><span style="color:var(--${col})">${txt}</span> · <span class="num">${gs(x.a)}</span></div></div>
+      <button class="btn sm p" style="--c:var(--green)" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}" data-ck="${x.ck || ''}" data-ret="0">Pagar</button></div>`; };
+  return sh('Falta pagar en este ciclo', '<button class="link" data-act="cobro">Ver plan</button>') +
+    `<div class="group ic">${items.length ? items.slice(0, 5).map(row).join('') : `<div class="cell">${icoBox('check', 'green')}<div class="tx"><div class="t">Todo pagado</div><div class="s">No te queda nada por pagar hasta el ${dLabel(cycleNext(k))}</div></div></div>`}
+      ${items.length > 5 ? `<button class="cell" data-act="cobro"><div class="tx" style="color:var(--blue)">Ver los ${items.length} pagos pendientes</div>${CHEV}</button>` : ''}
+      ${paid.length ? `<button class="cell" data-act="cobro">${icoBox('check', 'green')}<div class="tx"><div class="t">${paid.length} ${paid.length === 1 ? 'pago hecho' : 'pagos hechos'}</div><div class="s">${gs(sum(paid, m => m.amt))} en este ciclo</div></div>${CHEV}</button>` : ''}</div>`;
+}
+// Guía corta: qué anotar y cuándo, para que todo cuadre
+function guideSheet() {
+  const dc = dcDay(), k = curCycle();
+  const blk = (t, items) => `<div class="gh">${t}</div><div class="group steps">${items.map(([a, b]) => `<div class="step"><span class="nb"></span><div><b>${a}</b><p>${b}</p></div></div>`).join('')}</div>`;
+  openSheet(`${head('Cómo usar Libre')}
+    <div class="note">Tu plata se ordena por <b>ciclo de cobro</b>${dc === 1 ? ' (mes calendario)' : `: del ${dc} al ${dc - 1} del mes siguiente`}. De cada sueldo salen tres cosas: <b>gastos fijos</b>, <b>cuotas y tarjeta</b>, y lo que queda <b>para vivir</b>. Lo que sobra va al cofre para atacar la deuda. Ciclo actual: ${cycleLabel(k)}.</div>
+    ${blk('El día que cobrás · 5 minutos', [
+      ['Anotá tu cobro', 'Botón + → Ingreso → Sueldo, y elegí la cuenta donde entró. Con eso la app sabe con cuánto contás.'],
+      ['Pagá en orden', 'En Hoy, “Falta pagar en este ciclo” te lista todo por prioridad. Tocá <b>Pagar</b> en cada línea y elegí de qué cuenta salió.'],
+      ['Confirmá que cuadra', 'Después de cada pago aparece “Todo correcto” con el saldo de la cuenta. Miralo en tu banco y tocá <b>Sí, coincide</b>.']])}
+    ${blk('Cada día · 10 segundos por gasto', [
+      ['Anotá cada gasto', 'Botón + → Gasto → monto → sobre → cuenta. Si pagaste con tarjeta, elegí Tarjeta: suma a la deuda de la tarjeta.'],
+      ['Si es un gasto fijo', 'Elegí su sobre (por ejemplo Alquiler) y la app te pregunta “¿Qué estás pagando?”. Queda tachado en tus gastos fijos y en los pagos del ciclo: nunca se paga dos veces.'],
+      ['Mirá tu tope', '“Hoy podés gastar” es lo que queda en tus sobres dividido por los días hasta el próximo cobro.'],
+      ['¿No gastaste nada?', 'Tocá “No gasté”: mantiene tu racha y suma puntos.']])}
+    ${blk('Cuando vendés', [
+      ['Registrá la venta', 'Botón + → Venta: lo que cobraste, el costo y el proveedor. La app separa costo, IVA y ganancia, y manda tu parte al cofre.'],
+      ['Si todavía no te pagaron', 'Elegí “Todavía me deben”. Cuando te paguen: Negocio → Te deben → <b>Ya me pagaron</b>.']])}
+    ${blk('Cuando movés plata entre bancos', [
+      ['No es gasto ni ingreso', 'Hoy → Tus cuentas → la cuenta de origen → <b>Transferir</b>. Si el banco cobró comisión, ponela ahí.']])}
+    ${blk('Una vez por semana · 5 minutos', [
+      ['Conciliá tus cuentas', 'Hoy → Tus cuentas → cada cuenta → <b>Conciliar</b> con el saldo real del banco. Si no coincide, casi siempre falta anotar algo.'],
+      ['Leé a tu coach', 'Te avisa de gastos hormiga, sobres pasados y cuánto le falta al colchón.']])}
+    ${blk('Si te equivocaste', [
+      ['Editá o borrá', 'Tocá el movimiento → <b>Editar</b> (monto, fecha, sobre) o <b>Eliminar</b>. Se revierte solo en cuentas, sobres y deudas.'],
+      ['Si la app te frena', '“Ya está pagado en este ciclo” quiere decir que ese pago ya existe: no lo guardes de nuevo.']])}`);
+}
+// Sobres del día a día: lo que queda en cada uno hasta el próximo cobro
+function sobresSheet() {
+  const k = curCycle(), vl = varLeft(), vars = S.budget.filter(b => !b.fijo);
+  openSheet(`${head('Para vivir')}
+    <div class="center" style="padding:4px 0 14px">${icoBox('cart', 'teal', 'xl')}${big(fmt(vl.perDay) + '<span class="u">Gs por día</span>')}<small>${gs(vl.left)} para ${vl.daysLeft} ${vl.daysLeft === 1 ? 'día' : 'días'} · hasta el ${dLabel(cycleNext(k))}</small></div>
+    <div class="group ic">${vars.map(sobreRow).join('')}</div>
+    <p class="gf">Cada gasto que anotás baja su sobre. Cuando un sobre llega a cero, frenás hasta el próximo cobro o lo sacás de otro sobre: nunca de la tarjeta.</p>
+    <button class="btn w mt" data-act="tab" data-tab="plan">Ajustar montos en Plan</button>`);
 }
 /* ---------- Coach de finanzas personales: consejos según tus números del mes ---------- */
 function coachTips() {
-  const k = ym(today()), d = new Date(), day = d.getDate(), dim = lastDay(k), elapsed = day / dim, tips = [];
+  const k = curCycle(), dim = cycleLen(k), day = clamp(daysBetween(cycleStart(k), today()) + 1, 1, dim), elapsed = day / dim, tips = [];
   // 1) Gastos hormiga
   const h = hormigaStats(k);
   if (h.n >= 3) tips.push({ p: h.proj > 300000 ? 1 : 3, icon: 'ant', color: 'yellow', act: 'hormigas',
     t: `Gastos hormiga: ${gs(h.tot)} en ${h.n} compras chicas`,
-    s: `Al ritmo de hoy son ${gsK(h.proj)} en el mes${h.cats[0] && h.cats[0].b ? ', sobre todo en ' + esc(h.cats[0].b.name.toLowerCase()) : ''}. Cortando la mitad, ${gsK(h.proj / 2)} por mes van a tu colchón.` });
+    s: `Al ritmo de hoy son ${gsK(h.proj)} en el ciclo${h.cats[0] && h.cats[0].b ? ', sobre todo en ' + esc(h.cats[0].b.name.toLowerCase()) : ''}. Cortando la mitad, ${gsK(h.proj / 2)} por mes van a tu colchón.` });
   // 2) Sobres pasados y ritmo de gasto
   const vars = S.budget.filter(b => !b.fijo && b.amt > 0), over = vars.filter(b => monthSpent(b.id, k) > b.amt);
-  if (over.length) tips.push({ p: 0, icon: 'envelope', color: 'red', act: 'tab', tab: 'plan',
+  if (over.length) tips.push({ p: 0, icon: 'envelope', color: 'red', act: 'sobres',
     t: 'Te pasaste en ' + over.map(b => esc(b.name.toLowerCase())).join(', '),
     s: 'Por ' + gs(sum(over, b => monthSpent(b.id, k) - b.amt)) + '. Lo que sigas gastando ahí sale de otro sobre o del ataque: frená hasta el próximo cobro.' });
   const bud = sum(vars, b => b.amt), sp = sum(vars, b => Math.min(monthSpent(b.id, k), b.amt * 3));
-  if (bud && sp / bud > elapsed + 0.12 && !over.length) tips.push({ p: 1, icon: 'clock', color: 'orange', act: 'tab', tab: 'plan',
-    t: `Vas rápido: gastaste el ${(sp / bud * 100).toFixed(0)}% de tus sobres con el ${(elapsed * 100).toFixed(0)}% del mes`,
+  if (bud && sp / bud > elapsed + 0.12 && !over.length) tips.push({ p: 1, icon: 'clock', color: 'orange', act: 'sobres',
+    t: `Vas rápido: gastaste el ${(sp / bud * 100).toFixed(0)}% de tus sobres con el ${(elapsed * 100).toFixed(0)}% del ciclo`,
     s: `Te quedan ${gs(Math.max(0, bud - sp))} para ${dim - day + 1} días: ${gsK(Math.max(0, bud - sp) / (dim - day + 1))} por día.` });
   // 3) Tarjeta
-  const tc = sum(M.filter(m => m.t === 'gasto' && m.medio === 'tc' && ym(m.date) === k), m => m.amt);
+  const tc = sum(M.filter(m => m.t === 'gasto' && m.medio === 'tc' && mCycle(m) === k), m => m.amt);
   if (tc > 0) tips.push({ p: 2, icon: 'creditcard', color: 'indigo', act: 'tab', tab: 'batalla',
-    t: `Compraste ${gs(tc)} con tarjeta este mes`, s: 'Todo eso vuelve en el próximo extracto: pagalo completo. Si podés, usá débito: lo que no tenés no se gasta.' });
+    t: `Compraste ${gs(tc)} con tarjeta en este ciclo`, s: 'Todo eso vuelve en el próximo extracto: pagalo completo. Si podés, usá débito: lo que no tenés no se gasta.' });
   // 4) Colchón e inversión
   const col = goal('colchon');
   if (col && col.target && col.saved < col.target) {
@@ -846,16 +976,16 @@ function coachSection() {
     `<div class="group ic coach">${tips.map(x => `<button class="cell" data-act="${x.act}"${x.id ? ` data-id="${x.id}"` : ''}${x.tab ? ` data-tab="${x.tab}"` : ''}>${icoBox(x.icon, x.color)}<div class="tx"><div class="t">${x.t}</div><div class="s">${x.s}</div></div>${CHEV}</button>`).join('')}</div>`;
 }
 function hormigaSheet() {
-  const k = ym(today()), h = hormigaStats(k), max = hormigaMax();
+  const k = curCycle(), h = hormigaStats(k), max = hormigaMax();
   openSheet(`${head('Gastos hormiga')}
-    <div class="center" style="padding:4px 0 14px">${icoBox('ant', 'yellow', 'xl')}${big(fmt(h.tot) + '<span class="u">Gs</span>')}<small>${h.n} compras de hasta ${gs(max)} en ${MESES_L[+k.slice(5) - 1]}</small></div>
+    <div class="center" style="padding:4px 0 14px">${icoBox('ant', 'yellow', 'xl')}${big(fmt(h.tot) + '<span class="u">Gs</span>')}<small>${h.n} compras de hasta ${gs(max)} · ciclo ${cycleLabel(k)}</small></div>
     <div class="g3">
-      <div class="kv"><div class="k">A fin de mes</div><div class="n">${gsK(h.proj)}</div></div>
-      <div class="kv"><div class="k">Mes pasado</div><div class="n">${gsK(h.prev)}</div></div>
+      <div class="kv"><div class="k">A fin del ciclo</div><div class="n">${gsK(h.proj)}</div></div>
+      <div class="kv"><div class="k">Ciclo anterior</div><div class="n">${gsK(h.prev)}</div></div>
       <div class="kv"><div class="k">En un año</div><div class="n" style="color:var(--orange)">${gsK(h.proj * 12)}</div></div>
     </div>
     <div class="note mt">Son las compras chicas que no se sienten: café, delivery, snacks, apps, Bolt. Si las cortás a la mitad liberás <b>${gs(h.proj / 2)} por mes</b> (${gsK(h.proj * 6)} al año) para el colchón, tus viajes o invertir.</div>
-    ${h.cats.length ? `<div class="gh">Dónde se van</div><div class="group ic">${h.cats.map(c => `<div class="cell">${icoBox(c.b ? c.b.sym : 'tag', c.b ? c.b.color : 'gray')}<div class="tx"><div class="t">${esc(c.b ? c.b.name : c.id)}</div><div class="s">${c.n} ${c.n === 1 ? 'compra' : 'compras'} · promedio ${gsK(c.a / c.n)}</div></div><div class="v num">${gsK(c.a)}</div></div>`).join('')}</div>` : '<p class="gf mt">Este mes todavía no hay gastos hormiga. Seguí así.</p>'}
+    ${h.cats.length ? `<div class="gh">Dónde se van</div><div class="group ic">${h.cats.map(c => `<div class="cell">${icoBox(c.b ? c.b.sym : 'tag', c.b ? c.b.color : 'gray')}<div class="tx"><div class="t">${esc(c.b ? c.b.name : c.id)}</div><div class="s">${c.n} ${c.n === 1 ? 'compra' : 'compras'} · promedio ${gsK(c.a / c.n)}</div></div><div class="v num">${gsK(c.a)}</div></div>`).join('')}</div>` : '<p class="gf mt">En este ciclo todavía no hay gastos hormiga. Seguí así.</p>'}
     ${h.hs.length ? `<div class="gh">Las últimas</div><div class="group ic">${h.hs.slice().sort(byDateDesc).slice(0, 12).map(movRow).join('')}</div>` : ''}
     <div class="gh">Qué cuenta como hormiga</div>
     <div class="group">${field('Compras de hasta', money('hmMax', max))}</div>
@@ -870,20 +1000,6 @@ function setupCard() {
       ${cellLink('addDebt', 'flame', 'red', (needDebt ? '' : '✓ ') + 'Agregá tus deudas')}
       ${cellLink('account', 'download', 'blue', 'O importá tus datos (.json)')}
     </div></div>`;
-}
-function upcoming() {
-  const t = today(), ups = [];
-  S.loans.forEach(l => { const c = nextCuota(l); if (c) ups.push({ d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n, a: c.a, icon: 'bank', color: l.color, act: 'payCuota', id: l.id }); });
-  S.cards.forEach(c => { if (c.extracto > 0 && c.vence) ups.push({ d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Pagá el total', a: c.extracto, icon: 'creditcard', color: 'indigo', act: 'payCard', id: c.id }); });
-  pendPayables().forEach(p => { if (p.venc) ups.push({ d: p.venc, t: p.prov, s: 'Proveedor · ' + esc(p.desc || 'compra'), a: payPend(p), icon: 'box', color: 'indigo', act: 'payable', id: p.id }); });
-  S.fijos.forEach(f => { const k = fijoCycle(f), kk = fijoPaid(f, k) ? addMonth(k, 1) : k; ups.push({ d: dueInCycle(kk, f.dia), t: f.name, s: 'Gasto fijo · ' + (PRIO_L[f.prio || 2] || ''), a: f.amt, icon: f.sym || 'pin', color: f.color || 'blue', act: 'fijo', id: f.id }); });
-  ups.sort((a, b) => a.d.localeCompare(b.d));
-  return ups.slice(0, 6).map(u => {
-    const dd = daysBetween(t, u.d), col = dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'gray';
-    const txt = dd < 0 ? 'vencida' : dd === 0 ? 'hoy' : dd === 1 ? 'mañana' : 'en ' + dd + ' días';
-    return `<button class="cell" data-act="${u.act}" data-id="${u.id}">${icoBox(u.icon, u.color)}<div class="tx"><div class="t">${esc(u.t)}</div><div class="s">${u.s} · ${dLabel(u.d)}</div></div>
-      <div class="v"><span class="num">${gsK(u.a)}</span><small><span class="pill" style="--c:var(--${col})">${txt}</span></small></div></button>`;
-  }).join('');
 }
 
 /* =========================================================================
@@ -933,7 +1049,7 @@ function movRow(m) {
   if (m.t === 'venta' && m.cobrada === false) tags.push(`<span class="pill" style="--c:var(--orange)">por cobrar</span>`);
   if (m.origen && loan(m.origen)) tags.push(`<span class="pill" style="--c:var(--${loan(m.origen).color})">plata del préstamo</span>`);
   if (m.cuenta && m.t !== 'ajuste' && acctFlows(m).length) tags.push(`<span class="pill" style="--c:var(--${(acct(m.cuenta) || {}).color || 'gray'})">${esc(acctName(m.cuenta))}</span>`);
-  const showNote = m.note && !['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t);
+  const showNote = m.note && m.note !== mm.title && !(m.fijo && fijo(m.fijo) && m.note === fijo(m.fijo).name) && !['cuota', 'ataque', 'precancel', 'pagotc'].includes(m.t);
   const sub = showNote ? esc(m.note) : m.t === 'gasto' ? (MEDIO_L[m.medio] || '') : '';
   const amt = m.t === 'cero' ? '' : (mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt);
   return `<button class="cell" data-act="movDetail" data-id="${m.id}">${icoBox(mm.icon, mm.color)}<div class="tx"><div class="t">${esc(mm.title)}</div>
@@ -949,22 +1065,15 @@ function vMovs() {
   return `${lt('Movimientos', '', `<button class="icbtn" data-act="add" aria-label="Agregar">${sym('plus')}</button>`)}
   <div class="monthnav"><button class="icbtn" data-act="mk" data-d="-1" aria-label="Mes anterior">${sym('left')}</button><b>${ymLabel(k)}</b><button class="icbtn" data-act="mk" data-d="1" aria-label="Mes siguiente" ${k >= ym(today()) ? 'disabled style="opacity:.3"' : ''}>${sym('right')}</button></div>
   <div class="card">
-    <div class="g3">
-      <div class="kv"><div class="k">Ingresos</div><div class="n pos">${gsK(sm.ingresos)}</div></div>
-      <div class="kv"><div class="k">Egresos</div><div class="n neg">${gsK(sm.egresos)}</div></div>
-      <div class="kv"><div class="k">Neto</div><div class="n ${sm.neto < 0 ? 'neg' : ''}">${gsK(sm.neto)}</div></div>
-    </div>
-    <div class="mt">${bar(sm.ingresos / mx * 100, '', 'var(--green)')}</div>
-    <div style="margin-top:6px">${bar(sm.egresos / mx * 100, '', 'var(--red)')}</div>
-    <div class="legend">
-      <span style="--c:var(--orange)">Gastos personales <b>${gsK(sm.gPers)}</b></span>
-      <span style="--c:var(--indigo)">Negocio y compras <b>${gsK(sm.gNeg)}</b></span>
-      <span style="--c:var(--red)">Deudas <b>${gsK(sm.deudas)}</b></span>
-      <span style="--c:var(--gray)">IVA pagado <b>${gsK(sm.iva)}</b></span>
-      ${sm.ahorro ? `<span style="--c:var(--green)">Ahorro y aportes <b>${gsK(sm.ahorro)}</b></span>` : ''}
-      ${sm.hormiga ? `<span style="--c:var(--yellow)">Gastos hormiga <b>${gsK(sm.hormiga)}</b></span>` : ''}
-    </div>
-    ${sm.tc || sm.pagotc ? `<p class="gf" style="margin:10px 0 0">Compras con tarjeta: <b>${gs(sm.tc)}</b> (ya cuentan como gasto). Pagos de tarjeta: ${gs(sm.pagotc)}.</p>` : ''}
+    <div class="io"><span>Entró</span><b class="num">${gs(sm.ingresos)}</b></div>
+    <div class="iobar"><i style="width:${(sm.ingresos / mx * 100).toFixed(1)}%"></i></div>
+    <div class="io mt"><span>Salió</span><b class="num">${gs(sm.egresos)}</b></div>
+    ${(() => { const parts = [['fijo', 'Gastos fijos', sm.gFijo], ['deuda', 'Cuotas de deudas', sm.deudas], ['vivir', 'Día a día', sm.gDia], ['neg', 'Negocio e IVA', sm.gNeg + sm.iva]];
+      return `<div class="segbar thin" style="width:${Math.max(2, sm.egresos / mx * 100).toFixed(1)}%" role="img" aria-label="${parts.map(p => p[1] + ' ' + gs(p[2])).join(', ')}">${parts.map(p => p[2] > 0 ? `<i class="sg sg-${p[0]}" style="width:${(p[2] / Math.max(sm.egresos, 1) * 100).toFixed(2)}%" title="${p[1]}: ${gs(p[2])}"></i>` : '').join('')}</div>
+      <div class="legend">${parts.map(p => `<span style="--c:var(--c-${p[0]})">${p[1]} <b>${gsK(p[2])}</b></span>`).join('')}</div>`; })()}
+    <div class="io net"><span>${sm.neto >= 0 ? 'Quedó a favor' : 'Salió de más'}</span><b class="num ${sm.neto < 0 ? 'neg' : 'pos'}">${sm.neto < 0 ? '−' : '+'}${gs(Math.abs(sm.neto))}</b></div>
+    <p class="gf" style="margin:8px 0 0">${[sm.ahorro ? `Ahorro y aportes: <b>${gs(sm.ahorro)}</b> (no es gasto)` : '', sm.hormiga ? `Gastos hormiga: <b>${gs(sm.hormiga)}</b> (dentro del día a día)` : '',
+      sm.tc || sm.pagotc ? `Compras con tarjeta: <b>${gs(sm.tc)}</b> (ya cuentan como gasto) · pagos de tarjeta: ${gs(sm.pagotc)}` : ''].filter(Boolean).join('. ') || 'Mes calendario. Tus sobres y pagos fijos se miden por ciclo de cobro, en Hoy.'}${sm.ahorro || sm.hormiga || sm.tc || sm.pagotc ? '.' : ''}</p>
   </div>
   <div class="seg mt2">${segBtns('mf', 'mf', [['todos', 'Todos'], ['gastos', 'Gastos'], ['ingresos', 'Ingresos'], ['deudas', 'Deudas']], MF)}</div>
   ${Object.keys(days).length ? Object.entries(days).map(([d, ms]) => `<div class="gh">${cap(dayL(d))}</div><div class="group ic">${ms.map(movRow).join('')}</div>`).join('')
@@ -1004,7 +1113,7 @@ function cardBoss(c) {
   </div>`;
 }
 function roadmap() {
-  const r = sim(), k0 = ym(today()), ap = appliedMonth(k0);
+  const r = sim(), k0 = ym(today()), ap = appliedMonth();
   if (!r.months.length) return '';
   const rows = r.months.slice(0, 24).map((m, i) => {
     const [y, mo] = m.k.split('-');
@@ -1022,7 +1131,7 @@ function roadmap() {
       <div class="calb"><small>${y}</small><b>${cap(MESES[+mo - 1])}</b></div>
       <div class="tx"><div class="t row" style="gap:6px"><span style="color:var(--${color});display:inline-flex">${sym(icon)}</span><span class="grow" style="overflow:hidden;text-overflow:ellipsis">${esc(title)}</span></div>
         <div class="s">${parts.join(' · ') || 'sin pagos'}</div>
-        ${cur ? `<div class="applied"><div class="row between"><small>Aplicado por vos este mes</small><small class="num"><b>${gsK(ap.done)}</b> de ${gsK(ap.target)}</small></div>${bar(ap.target ? ap.done / ap.target * 100 : 0, '', 'var(--green)')}</div>` : ''}</div>
+        ${cur ? `<div class="applied"><div class="row between"><small>Aplicado por vos en este ciclo de cobro</small><small class="num"><b>${gsK(ap.done)}</b> de ${gsK(ap.target)}</small></div>${bar(ap.target ? ap.done / ap.target * 100 : 0, '', 'var(--green)')}<small style="display:block;margin-top:4px">Meta del ciclo: cuotas que vencen antes del próximo cobro + ataque mensual.</small></div>` : ''}</div>
       <div class="v"><span class="num">${m.left <= 0 ? '<b class="pos">LIBRE</b>' : gsK(m.left)}</span><small>${m.left <= 0 ? '' : 'queda'}</small></div></div>`;
   }).join('');
   return sh('Hoja de ruta', `<small>libre en ${ymLabel(r.fin)}</small>`) +
@@ -1074,6 +1183,7 @@ function debtChart() {
       ${free ? `<text x="${X(end.d)}" y="${Y(0) - 8}" text-anchor="end" class="lbl">Libre · ${MESES[+end.k.slice(5) - 1]} ${end.k.slice(2, 4)}</text>` : ''}
       <line class="xh" id="dcX" x1="0" x2="0" y1="${T}" y2="${H - B}"/>
       <circle class="dot" cx="${X(t)}" cy="${Y(now)}" r="4.5"/>
+      <text x="${X(t) > W * 0.6 ? X(t) - 9 : X(t) + 9}" y="${Math.max(T + 2, Y(now) - 9)}" text-anchor="${X(t) > W * 0.6 ? 'end' : 'start'}" class="lbl">Hoy · ${gsK(now)}</text>
       <circle class="dot hov" id="dcP" cx="0" cy="0" r="4.5"/>
     </svg>
     <div class="tip" id="dcT" aria-hidden="true"></div>
@@ -1194,8 +1304,11 @@ function vBatalla() {
   ${S.cards.length ? sh('Tarjetas') + S.cards.map(cardBoss).join('') : ''}
   ${ord.list.length ? sh('Orden de ataque') + `<p class="gf" style="margin:-2px 2px 12px">${why}</p>` + ord.list.map((l, i) => bossCard(l, i === 0)).join('') : ''}
   ${!S.loans.length && !S.cards.length ? `<div class="card center"><span class="ico xl" style="--c:var(--red);margin:0 auto">${sym('flame')}</span><h3 class="mt">Cargá tus deudas</h3><p class="s2 mt" style="font-size:15px">Cada préstamo es un jefe con barra de vida. Cada pago le quita vida.</p><button class="btn p mt2" data-act="addDebt">Agregar deuda</button></div>` : ''}
-  ${vals.some(v => v) ? sh('Cuotas de los próximos 12 meses') + `<div class="card"><div class="chart">${months.map((m, i) => `<div><i style="height:${(vals[i] / mx * 82).toFixed(1)}%"></i><small>${MESES[+m.slice(5) - 1]}</small></div>`).join('')}</div>
-    <p class="gf" style="margin:10px 0 0">Sin contar ataques. Cada barra que baja es una cuota que se libera: esa plata va al siguiente jefe, no a gastos.</p></div>` : ''}
+  ${vals.some(v => v) ? sh('Cuotas por mes', '<small>próximos 12 meses</small>') + `<div class="card">
+    <div class="k-head">${sym('chart')}Lo que te debitan los préstamos cada mes</div>
+    <div class="chart">${months.map((m, i) => { const chg = i === 0 || gsK(vals[i]) !== gsK(vals[i - 1]); // se rotula solo donde el monto cambia
+      return `<button data-act="barInfo" data-t="${cap(ymLabel(m))}: ${gs(vals[i])} en cuotas" aria-label="${ymLabel(m)}: ${gs(vals[i])}"><em>${chg && vals[i] ? gsK(vals[i]) : ''}</em><i style="height:${(vals[i] / mx * 74).toFixed(1)}%"></i><small>${MESES[+m.slice(5) - 1]}</small></button>`; }).join('')}</div>
+    <p class="gf" style="margin:10px 0 0">Si solo pagás las cuotas, sin atacar. Cada escalón que baja es un préstamo que termina: esa plata pasa al siguiente jefe, no a gastos. Tocá una barra para ver el monto.</p></div>` : ''}
   ${dead.length ? sh('Derrotados') + dead.map(l => bossCard(l, false)).join('') : ''}`;
 }
 
@@ -1371,12 +1484,16 @@ function stepsHtml() {
     ['Cuando seas libre', `Los ${gs(debtBudget())}/mes que hoy van a deudas se reparten: 40% colchón de 6 meses e inversión · 30% viajes · 30% negocio.`]
   ].map(([t, p]) => `<div class="step"><span class="nb"></span><div><b>${t}</b><p>${p}</p></div></div>`).join('');
 }
+// Un sobre: lo gastado en el ciclo contra su monto. Los sobres fijos muestran además cuáles de sus gastos fijos ya pagaste.
 function sobreRow(b) {
-  const k = ym(today()), amt = budAmt(b), sp = monthSpent(b.id, k), pc = amt ? sp / amt * 100 : 0;
-  const col = b.fijo ? 'var(--gray)' : pc > 100 ? 'var(--red)' : pc > 80 ? 'var(--orange)' : `var(--${b.color})`;
-  return `<button class="cell" data-act="budget" data-id="${b.id}">${icoBox(b.sym, b.color)}<div class="tx">
+  const k = curCycle(), amt = budAmt(b), sp = monthSpent(b.id, k), pc = amt ? sp / amt * 100 : 0;
+  const fs = fijosOf(b.id).filter(f => fijoCycle(f, k) === k), pend = fs.filter(f => !fijoPaid(f, k));
+  const col = b.fijo ? (fs.length && !pend.length ? 'var(--green)' : 'var(--c-fijo)') : pc > 100 ? 'var(--red)' : pc > 80 ? 'var(--orange)' : `var(--${b.color})`;
+  const note = fs.length ? (pend.length ? `${fs.length - pend.length} de ${fs.length} pagados · falta ${pend.map(f => esc(f.name)).join(', ')}` : (fs.length === 1 ? 'Pagado' : 'Los ' + fs.length + ' pagados') + ' en este ciclo')
+    : b.fijo ? '' : amt ? (sp > amt ? 'Te pasaste por ' + gsK(sp - amt) : 'Quedan ' + gsK(amt - sp)) : '';
+  return `<button class="cell" data-act="budget" data-id="${b.id}">${icoBox(fs.length && !pend.length ? 'check' : b.sym, fs.length && !pend.length ? 'green' : b.color)}<div class="tx">
     <div class="row between"><span class="t">${esc(b.name)}</span><span class="num" style="font-size:15px;flex:none">${gsK(sp)} <span class="s2">/ ${gsK(amt)}</span></span></div>
-    <div style="margin-top:7px">${bar(pc, '', col)}</div></div>${CHEV}</button>`;
+    <div style="margin-top:7px">${bar(pc, '', col)}</div>${note ? `<div class="s" style="margin-top:5px">${note}</div>` : ''}</div>${CHEV}</button>`;
 }
 function goalRow(g) {
   const pc = g.target ? g.saved / g.target * 100 : 0, locked = goalLocked(g);
@@ -1394,7 +1511,8 @@ function vPlan() {
   ${distCard()}
   <div class="group steps mt">${stepsHtml()}</div>
   ${fijosSection()}
-  ${sh('Sobres del mes', '<button class="link" data-act="newBudget">Agregar</button>')}
+  ${sh('Sobres del ciclo', '<button class="link" data-act="newBudget">Agregar</button>')}
+  <p class="gf" style="margin:-2px 2px 10px">${cycleLabel(curCycle())} · se reinician el día que cobrás.</p>
   <div class="group ic">${S.budget.map(sobreRow).join('')}</div>
   ${sh('Ahorro e inversión')}
   ${ahorroCard()}
@@ -1405,12 +1523,13 @@ function vPlan() {
   ${F.map(f => `<div class="gh">${f[0]}</div><div class="group">${f[1].map(t => `<label class="task ${S.tasks[t[0]] ? 'done' : ''}"><input type="checkbox" ${S.tasks[t[0]] ? 'checked' : ''} data-change="task" data-id="${t[0]}"><span>${t[1]}</span></label>`).join('')}</div>`).join('')}
   ${sh('Más')}
   <div class="group ic">
+    ${cellLink('guide', 'sparkles', 'green', 'Cómo usar Libre', 'Qué anotar cada día y el día de cobro')}
     ${cellLink('rules', 'book', 'yellow', 'Las 7 reglas del juego')}
     ${cellLink('prompt', 'bubble', 'purple', 'Revisión mensual con Claude', 'Prompt con tus datos actualizados')}
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.7.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.8.0</p>`;
 }
 
 /* =========================================================================
@@ -1423,10 +1542,15 @@ function openAdd(t, o = {}) {
   REG.cob = 'si'; REG.cuenta = acctDefault(); REG.cuentaProv = ''; REG.origen = ''; REG.dupOk = false;
   if (!S.cards.find(c => c.id === REG.card)) REG.card = S.cards[0] ? S.cards[0].id : '';
   if (!S.budget.find(b => b.id === REG.cat && b.id !== 'cuotas')) REG.cat = (S.budget.find(b => b.id !== 'cuotas') || {}).id;
+  REG.fijo = defFijo(REG.cat);
   const p = o.pay && payable(o.pay);
   if (p) { REG.t = 'venta'; REG.costoA = 'proveedor'; REG.pay = p.id; REG.ivaC = p.iva || 'none'; REG.d.costo = fmt(payPend(p)); }
   openSheet(addHtml()); mountAdd();
 }
+// Gastos fijos de un sobre que todavía no pagaste en este ciclo
+const fijosPend = cat => fijosOf(cat).filter(f => { const k = fijoCycle(f); return k === curCycle() && !fijoPaid(f, k); });
+// En un sobre fijo (alquiler, servicios) lo normal es estar pagando uno de sus gastos fijos: viene elegido
+const defFijo = cat => { const b = S.budget.find(x => x.id === cat), p = fijosPend(cat); return b && b.fijo && p.length ? p[0].id : ''; };
 function saveDraft() {
   const v = id => { const e = $('#' + id); return e ? e.value : undefined; };
   const d = { amt: v('fAmt'), date: v('fDate'), note: v('fNote'), cli: v('fCli'), costo: v('fCosto'), prov: v('fProv') };
@@ -1449,6 +1573,9 @@ function addHtml() {
     body = `
     <div class="seg mt">${segBtns('reg', 'amb', [['personal', 'Personal'], ['negocio', 'Negocio']], REG.amb)}</div>
     ${neg ? '' : `<div class="gh">Sobre</div><div class="chips">${cats.map(c => regChip('cat', c.id, c.name, c.sym, c.color, REG.cat === c.id)).join('')}</div>`}
+    ${neg || !fijosOf(REG.cat).length ? '' : (() => { const pend = fijosPend(REG.cat);
+      return `<div class="gh">¿Qué estás pagando?</div><div class="chips">${pend.map(f => regChip('fijo', f.id, f.name + ' · ' + gsK(f.amt), f.sym || 'pin', f.color || 'blue', REG.fijo === f.id)).join('')}${regChip('fijo', '', 'Otro gasto', 'tag', 'gray', !REG.fijo)}</div>
+        <p class="gf">${!pend.length ? 'Los gastos fijos de este sobre ya están pagados en este ciclo.' : REG.fijo ? 'Queda tachado en tus gastos fijos y en los pagos del ciclo.' : 'Si es uno de tus gastos fijos, elegilo: así no lo pagás dos veces.'}</p>`; })()}
     <div class="gh">Pagado con</div>
     <div class="seg">${segBtns('reg', 'medio', neg ? [['caja', 'Caja negocio'], ['tc', 'Tarjeta'], ['debito', 'Personal']] : [['debito', 'Débito'], ['efectivo', 'Efectivo'], ['tc', 'Tarjeta']], REG.medio)}</div>
     ${REG.medio === 'tc' ? (S.cards.length > 1 ? `<div class="chips mt">${S.cards.map(c => regChip('card', c.id, c.name, 'creditcard', 'indigo', REG.card === c.id)).join('')}</div>` : '')
@@ -1580,17 +1707,20 @@ function saveAdd() {
     m.iva = REG.iva; m.ivaAmt = ivaOf(amt, REG.iva);
     if (m.medio !== 'tc' && REG.cuenta && acct(REG.cuenta)) { m.cuenta = REG.cuenta; lsSet('libre-acct', REG.cuenta); }
     if (m.medio !== 'tc' && REG.origen && loan(REG.origen)) m.origen = REG.origen;
-    // Match con el gasto fijo del mismo sobre (ej.: alquiler) y freno a los pagos repetidos
-    const f = m.ambito === 'personal' ? S.fijos.find(x => x.amb === 'personal' && x.cat === m.cat) : null;
-    const twin = M.find(x => x.t === 'gasto' && x.amt === amt && x.cat === m.cat && Math.abs(daysBetween(x.date, date)) <= 2);
-    const k = f ? cycleOf(date) : '', prev = f && M.find(x => (x.fijo === f.id && (x.ciclo || cycleOf(x.date)) === k) || (x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k));
-    const dup = prev || twin;
+    // Match con el gasto fijo elegido (ej.: alquiler) y freno a los pagos repetidos
+    const pers = m.ambito === 'personal', f = pers && REG.fijo ? fijo(REG.fijo) : null;
+    const kf = f ? fijoCycle(f, cycleOf(date)) : '', prev = f ? fijoPaid(f, kf) : null;
+    const twin = M.find(x => x.t === 'gasto' && x.amt === amt && x.cat === m.cat && x.ambito === m.ambito && Math.abs(daysBetween(x.date, date)) <= 2);
+    // "Otro gasto" en un sobre fijo cuyos fijos ya están todos pagados: suele ser un pago repetido
+    const bfix = pers && !f && S.budget.find(b => b.id === m.cat && b.fijo), all = bfix ? fijosOf(m.cat) : [];
+    const ya = all.length && all.every(x => fijoPaid(x, fijoCycle(x, cycleOf(date)))) ? fijoPaid(all[0], fijoCycle(all[0], cycleOf(date))) : null;
+    const dup = prev || twin || ya;
     if (dup && !REG.dupOk) {
       REG.dupOk = true;
-      const w = $('#dupWarn'); if (w) w.innerHTML = `<div class="note" style="background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ojo: ${prev && f ? esc(f.name) + ' ya está pagado en este ciclo' : 'ya hay un gasto igual'}</b> (${dLabel(dup.date)} · ${gs(dup.amt)}). Si es otro pago distinto, tocá Guardar de nuevo.</div>`;
+      const w = $('#dupWarn'); if (w) w.innerHTML = `<div class="note" style="background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ojo: ${prev ? esc(f.name) + ' ya está pagado en este ciclo' : ya && !twin ? 'los gastos fijos de este sobre ya están pagados' : 'ya hay un gasto igual'}</b> (${dLabel(dup.date)} · ${gs(dup.amt)}). Si es otro pago distinto, tocá Guardar de nuevo.</div>`;
       haptic(30); return toast('Parece un pago repetido: revisalo antes de guardar');
     }
-    if (f && !prev) { m.fijo = f.id; m.ciclo = k; }
+    if (f && !prev) { m.fijo = f.id; m.ciclo = kf; if (!m.note) m.note = f.name; }
     applyMov(m); addXP(5);
     if (m.ambito === 'personal') {
       const b = S.budget.find(x => x.id === m.cat), spent = monthSpent(m.cat, ym(date)) + amt;
@@ -1970,14 +2100,14 @@ function fijoRow(f) {
     <div class="v">${paid ? `<span class="pill" style="--c:var(--green)">${sym('check')}Pagado</span>` : `<span class="num">${gsK(f.amt)}</span><small style="color:var(--${dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'label2'})">a pagar</small>`}</div>${CHEV}</button>`;
 }
 function fijosSection() {
-  const w = payWindow(), fs = fijosSorted(), paid = fs.filter(f => fijoPaid(f)), tot = sum(fs, f => f.amt), pp = sum(paid, f => fijoPaid(f).amt);
+  const k = curCycle(), fs = fijosSorted(), paid = fs.filter(f => fijoPaid(f)), tot = sum(fs, f => f.amt), pp = sum(paid, f => fijoPaid(f).amt);
   return sh('Gastos fijos', '<button class="link" data-act="newFijo">Agregar</button>') +
     (fs.length ? `<div class="card" style="padding:14px 16px">
         <div class="row between"><b>${paid.length} de ${fs.length} pagados</b><span class="num s2">${gsK(pp)} de ${gsK(tot)}</span></div>
-        <div class="mt">${bar(tot ? pp / tot * 100 : 0, '', 'var(--green)')}</div>
-        <small style="display:block;margin-top:6px">Ciclo del cobro del ${dLabel(w.pay)} al ${dLabel(dStr(new Date(new Date(w.next + 'T12:00') - 864e5)))}</small></div>
+        <div class="mt">${bar(tot ? pp / tot * 100 : 0, '', 'var(--c-fijo)')}</div>
+        <small style="display:block;margin-top:6px">Ciclo ${cycleLabel(k)} · faltan ${gs(Math.max(0, tot - pp))}</small></div>
       <div class="group ic mt">${fs.map(fijoRow).join('')}</div>
-      <p class="gf">Se pagan primero, el día que cobrás: alquiler, contadora y ANDE adelante de todo.</p>`
+      <p class="gf">Se pagan primero, el día que cobrás. Al pagar uno (desde acá, desde Hoy o anotando un gasto en su sobre) queda tachado en todos lados y baja su sobre.</p>`
     : `<div class="group ic">${cellLink('newFijo', 'pin', 'blue', 'Cargá tus gastos fijos', 'Alquiler, contadora, ANDE, internet, celular…')}</div>`);
 }
 function fijoForm(id, sugI, pre = {}) {
@@ -2020,10 +2150,12 @@ function fijoSheet(id) {
       : `<button class="btn p w" style="--c:var(--green)" data-act="fijoPay" data-id="${id}">${sym('check')}Pagar el que vence el ${dLabel(due)}</button>`}
     ${hist.length ? `<div class="gh">Últimos pagos</div><div class="group ic">${hist.map(movRow).join('')}</div>` : ''}`);
 }
-function fijoPaySheet(id) {
+function fijoPaySheet(id, ck) {
   const f = fijo(id); if (!f) return;
-  const k = fijoCycle(f), loose = f.amb === 'personal' && f.cat ? M.find(x => x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k) : null, paid = fijoPaid(f, k);
+  const k = ck || fijoCycle(f), loose = f.amb === 'personal' && f.cat ? M.find(x => x.t === 'gasto' && !x.fijo && x.cat === f.cat && mCycle(x) === k && Math.abs(x.amt - f.amt) <= f.amt * 0.25) : null, paid = fijoPaid(f, k);
   openSheet(`${head('Pagar ' + esc(f.name), `<button class="link b" data-act="doFijoPay" data-id="${id}">Guardar</button>`, `<button class="link" data-act="fijo" data-id="${id}">Atrás</button>`)}
+    <input type="hidden" id="fpK" value="${k}">
+    <p class="gf" style="margin:0 4px 10px">El que vence el ${dLabel(dueInCycle(k, f.dia))} · ciclo ${cycleLabel(k)}</p>
     ${paid ? `<div class="note" style="margin-bottom:12px;background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ya está pagado en este ciclo</b>: ${gs(paid.amt)} el ${dLabel(paid.date)}. Guardá solo si es otro pago distinto.</div>` : ''}
     ${loose && !paid ? `<div class="note" style="margin-bottom:12px;background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ya cargaste ${gs(loose.amt)} en ${esc((S.budget.find(b => b.id === f.cat) || {}).name || 'este sobre')} el ${dLabel(loose.date)}.</b> Si es este mismo pago, no lo pagues de nuevo: unilo al gasto fijo.<br><button class="btn sm mt" style="--c:var(--${f.color || 'blue'})" data-act="linkFijo" data-id="${loose.id}">${sym('link')}Unir ese pago (match)</button></div>` : ''}
     <div class="group">${field('Monto pagado', money('fpA', f.amt))}${field('Fecha', `<input id="fpD" type="date" value="${today()}">`)}</div>
@@ -2035,70 +2167,80 @@ function doFijoPay(id) {
   // Aporte (ahorro): no es gasto, suma a la meta elegida
   if (f.amb === 'ahorro') {
     if (!goal(f.goal)) { const g = APORTES_GOAL(); Object.assign(g, GOAL_META.aportes); S.goals.splice(2, 0, g); f.goal = 'aportes'; }
-    const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'aporte', goal: f.goal, cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: fijoCycle(f), note: f.name };
+    const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'aporte', goal: f.goal, cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: ($('#fpK') || {}).value || fijoCycle(f), note: f.name };
     applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
     return toast(f.name + ' · +' + gs(amt) + ' a ' + goal(f.goal).name);
   }
   const neg = f.amb === 'negocio', iva = neg ? f.iva || '10' : 'none';
   const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'gasto', ambito: neg ? 'negocio' : 'personal', medio: 'debito', cat: neg ? 'negocio' : f.cat,
-    iva, ivaAmt: ivaOf(amt, iva), cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: fijoCycle(f), note: f.name };
+    iva, ivaAmt: ivaOf(amt, iva), cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: ($('#fpK') || {}).value || fijoCycle(f), note: f.name };
   applyMov(m); M.push(m); addXP(10); checkin(); haptic(12); checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
   toast(f.name + ' pagado · ' + gs(amt));
 }
-// Plan del día de cobro: qué pagar y en qué orden con lo que cobrás
-function cobroItems() {
-  const w = payWindow(), items = [];
+// Plan de pagos de un ciclo: lo que falta pagar con ese cobro, en orden de prioridad.
+// grp: 'fijos' (sobres fijos, negocio, aportes) · 'deudas' (cuotas y tarjeta) · 'vivir' (un fijo que sale de un sobre del día a día)
+function cobroItems(k = curCycle()) {
+  const w = payWindow(k), items = [];
+  const fixedIds = new Set(S.budget.filter(b => b.fijo && b.id !== 'cuotas').map(b => b.id));
   S.fijos.forEach(f => {
-    const k = fijoCycle(f), due = dueInCycle(k, f.dia);
-    if (!fijoPaid(f, k) && due < w.next) items.push({ prio: f.prio || 2, d: due, t: f.name, s: 'Gasto fijo · vence el ' + dLabel(due), a: f.amt, act: 'fijoPay', id: f.id, icon: f.sym || 'pin', color: f.color || 'blue' });
+    const kk = fijoCycle(f, k); if (kk !== k || fijoPaid(f, kk)) return;
+    const due = dueInCycle(kk, f.dia);
+    items.push({ prio: f.prio || 2, d: due, t: f.name, s: 'Gasto fijo · vence el ' + dLabel(due), a: f.amt, act: 'fijoPay', id: f.id, ck: kk, icon: f.sym || 'pin', color: f.color || 'blue',
+      grp: f.amb === 'personal' && !fixedIds.has(f.cat) ? 'vivir' : 'fijos' });
   });
   S.loans.forEach(l => l.cuotas.forEach(c => {
     if (c.paid || c.d >= w.next) return;
     const agui = S.settings.lumpTarget === l.id && !S.settings.lumpRecibido && S.settings.lumpMes && ym(c.d) >= S.settings.lumpMes;
-    if (!agui) items.push({ prio: 1, d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n + ' · vence ' + dLabel(c.d), a: c.a, act: 'payCuota', id: l.id, icon: 'bank', color: l.color });
+    if (!agui) items.push({ prio: 1, d: c.d, t: l.name, s: (entOf(l) ? esc(entOf(l)) + ' · ' : '') + 'Cuota ' + c.n + ' · vence ' + dLabel(c.d), a: c.a, act: 'payCuota', id: l.id, icon: 'bank', color: l.color, grp: 'deudas' });
   }));
-  S.cards.forEach(c => { if (c.extracto > 0 && c.vence && c.vence < w.next) items.push({ prio: 1, d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Total del extracto · vence ' + dLabel(c.vence), a: c.extracto, act: 'payCard', id: c.id, icon: 'creditcard', color: 'indigo', card: true }); });
-  // Sobres fijos (alquiler…) que todavía no cargaste como gasto fijo: igual entran al plan
-  S.budget.filter(b => b.fijo && b.id !== 'cuotas' && b.amt > 0 && !S.fijos.some(f => f.amb !== 'negocio' && f.cat === b.id))
-    .forEach(b => items.push({ prio: 1, d: w.pay, t: b.name, s: 'Sobre fijo · tocá Pagar para cargarlo como gasto fijo', a: b.amt, act: 'sobre', id: b.id, icon: b.sym, color: b.color }));
-  pendPayables().forEach(p => { if (p.venc && p.venc < w.next && !p.venta) items.push({ prio: 2, d: p.venc, t: p.prov, s: 'Proveedor · vence ' + dLabel(p.venc), a: payPend(p), act: 'payable', id: p.id, icon: 'box', color: 'indigo' }); });
+  S.cards.forEach(c => { if (c.extracto > 0 && c.vence && c.vence < w.next) items.push({ prio: 1, d: c.vence, t: c.name, s: (entOf(c) ? esc(entOf(c)) + ' · ' : '') + 'Total del extracto · vence ' + dLabel(c.vence), a: c.extracto, act: 'payCard', id: c.id, icon: 'creditcard', color: 'indigo', grp: 'deudas' }); });
+  // Sobres fijos (alquiler…) que todavía no cargaste como gasto fijo: igual entran al plan por lo que falte
+  S.budget.filter(b => fixedIds.has(b.id) && b.amt > 0 && !fijosOf(b.id).length).forEach(b => {
+    const falta = b.amt - monthSpent(b.id, k);
+    if (falta > 0) items.push({ prio: 1, d: w.pay, t: b.name, s: 'Sobre fijo · tocá Pagar para cargarlo como gasto fijo', a: falta, act: 'sobre', id: b.id, icon: b.sym, color: b.color, grp: 'fijos' });
+  });
+  pendPayables().forEach(p => { if (p.venc && p.venc < w.next && !p.venta) items.push({ prio: 2, d: p.venc, t: p.prov, s: 'Proveedor · vence ' + dLabel(p.venc), a: payPend(p), act: 'payable', id: p.id, icon: 'box', color: 'indigo', grp: 'neg' }); });
   items.sort((a, b) => a.prio - b.prio || a.d.localeCompare(b.d));
-  // Para vivir: los sobres variables del mes (los que no están cubiertos por un gasto fijo)
-  const covered = new Set(S.fijos.filter(f => f.amb !== 'negocio').map(f => f.cat));
-  const vivir = S.budget.filter(b => !b.fijo && !covered.has(b.id) && b.amt > 0);
-  return { w, items, vivir };
+  return { w, items };
 }
-function cobroList(ingreso, useCofre) {
-  const { items, vivir } = cobroItems();
-  let left = ingreso + (useCofre ? Math.max(0, S.funds.cofre) : 0);
-  const row = (x, n) => { left -= x.a; return `<div class="cell cobro">${icoBox(x.icon, x.color)}<div class="tx"><div class="t"><span class="nb2">${n}</span>${esc(x.t)}</div><div class="s">${x.s}</div>
-      <div class="s ${left < 0 ? 'neg' : ''}">queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div>
-    <div class="v"><span class="num">${gsK(x.a)}</span><button class="btn sm" style="--c:var(--green);margin-top:4px;padding:5px 10px" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}">Pagar</button></div></div>`; };
-  const tiers = [[1, 'Primero: no se negocia'], [2, 'Después'], [3, 'Si alcanza']];
+function cobroList(k, ingreso, useCofre) {
+  const c = cycleData(k), cofre = Math.max(0, S.funds.cofre);
+  const gastado = c.fijosDone + c.deudaDone + c.vivirDone + c.otros;
+  let left = ingreso + c.cofreUsado + (useCofre ? cofre : 0) - gastado;
+  const q = () => `<div class="s ${left < 0 ? 'neg' : ''}">te queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div>`;
+  const row = (x, n) => { left -= x.a; return `<div class="cell cobro">${icoBox(x.icon, x.color)}<div class="tx"><div class="t"><span class="nb2">${n}</span>${esc(x.t)}</div><div class="s">${x.s}</div>${q()}</div>
+    <div class="v"><span class="num">${gsK(x.a)}</span><button class="btn sm" style="--c:var(--green);margin-top:4px;padding:5px 10px" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}" data-ck="${x.ck || ''}">Pagar</button></div></div>`; };
   let n = 0, html = '';
-  tiers.forEach(([p, l]) => { const xs = items.filter(x => x.prio === p); if (xs.length) html += `<div class="gh">${l}</div><div class="group ic">${xs.map(x => row(x, ++n)).join('')}</div>`; });
-  const viv = sum(vivir, b => b.amt);
-  if (viv) { left -= viv; html += `<div class="gh">Para vivir el mes</div><div class="group ic"><div class="cell cobro">${icoBox('cart', 'green')}<div class="tx"><div class="t"><span class="nb2">${++n}</span>Sobres del mes</div><div class="s">${vivir.map(b => esc(b.name.split(' ')[0]) + ' ' + gsK(b.amt)).join(' · ')}</div><div class="s ${left < 0 ? 'neg' : ''}">queda ${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div><div class="v num">${gsK(viv)}</div></div></div>`; }
+  if (gastado) html += `<div class="group"><div class="cell"><div class="tx"><div class="t">Ya pagaste y gastaste</div><div class="s">Fijos ${gsK(c.fijosDone)} · deudas ${gsK(c.deudaDone)} · día a día ${gsK(c.vivirDone)}${c.otros ? ' · negocio ' + gsK(c.otros) : ''}</div></div><div class="v num">− ${gs(gastado)}</div></div>
+    <div class="cell"><div class="tx" style="font-weight:600">Te queda para lo que falta</div><div class="v num" style="font-weight:700">${left < 0 ? '−' : ''}${gs(Math.abs(left))}</div></div></div>`;
+  [[1, 'Falta pagar · primero, no se negocia'], [2, 'Falta pagar · después'], [3, 'Falta pagar · si alcanza']].forEach(([p, l]) => {
+    const xs = c.items.filter(x => x.prio === p); if (xs.length) html += `<div class="gh">${l}</div><div class="group ic">${xs.map(x => row(x, ++n)).join('')}</div>`; });
+  if (!c.items.length) html += `<div class="group ic mt"><div class="cell">${icoBox('check', 'green')}<div class="tx"><div class="t">No queda nada por pagar</div><div class="s">Hasta el próximo cobro, el ${dLabel(c.w.next)}</div></div></div></div>`;
+  // Para vivir: lo que queda en los sobres del día a día (sin contar dos veces un fijo que sale de esos sobres)
+  const viv = Math.max(0, c.vivirLeft - sum(c.items.filter(x => x.grp === 'vivir'), x => x.a));
+  if (viv) { left -= viv; html += `<div class="gh">Para vivir hasta el ${dLabel(c.w.next)}</div><div class="group ic"><button class="cell cobro" data-act="sobres">${icoBox('cart', 'teal')}<div class="tx"><div class="t"><span class="nb2">${++n}</span>Lo que queda en tus sobres</div><div class="s">${c.daysLeft ? gsK(c.vivirLeft / Math.max(1, c.daysLeft)) + ' por día · ' + c.daysLeft + ' días' : 'Supermercado, comida, transporte…'}</div>${q()}</div><div class="v num">${gsK(viv)}</div></button></div>`; }
   html += left >= 0
     ? `<div class="note mt"><b>Te sobran ${gs(left)}</b>: van al cofre para atacar ${cardDebt() > 0 ? 'la tarjeta (el resto de su saldo)' : 'a ' + esc((attackOrder().list.find(l => l.id !== S.settings.lumpTarget) || {}).name || 'la deuda')}. No los dejes sueltos en la cuenta.</div>`
-    : `<div class="note mt" style="background:color-mix(in srgb,var(--red) 12%,transparent)"><b style="color:var(--red)">Faltan ${gs(-left)}.</b> ${useCofre ? 'Recortá sobres variables (comida afuera, pádel) o esperá las horas extra.' : 'Activá “Usar el cofre” o esperá las horas extra; si no, recortá sobres variables.'}</div>`;
+    : `<div class="note mt" style="background:color-mix(in srgb,var(--red) 12%,transparent)"><b style="color:var(--red)">Faltan ${gs(-left)}.</b> ${useCofre ? 'Recortá sobres del día a día (comida afuera, pádel), sumá ventas o esperá las horas extra.' : cofre ? 'Activá “Usar el cofre” (' + gsK(cofre) + '); si no alcanza, recortá sobres o sumá ventas.' : 'Recortá sobres del día a día, sumá ventas o esperá las horas extra.'}</div>`;
   return html;
 }
-function cobroSheet() {
-  RETURN_TO = 'cobro';
-  const { w } = cobroItems(), st = S.settings, inc = lsGet('libre-cobro-amt');
-  const lt = st.lumpTarget && loan(st.lumpTarget);
-  openSheet(`${head('Plan del día de cobro')}
-    <p class="gf" style="margin:0 4px 12px">${w.pay < today() ? 'Cobraste' : 'Cobrás'} el <b>${dLabel(w.pay)}</b>. Esto es lo que tenés que pagar antes del próximo cobro (${dLabel(w.next)}), en orden.</p>
-    <div class="group">${field('Lo que cobrás', money('cpA', inc ? +inc : st.base))}
+let COBRO_K = null;
+function cobroSheet(k = COBRO_K || curCycle()) {
+  RETURN_TO = 'cobro'; COBRO_K = k;
+  const c = cycleData(k), st = S.settings, cur = k === curCycle(), saved = +lsGet('libre-cobro-amt') || 0, paid = paidInCycle(k);
+  const inc = c.estimado ? (saved || st.base) : c.income, lt = st.lumpTarget && loan(st.lumpTarget);
+  openSheet(`${head(cur ? 'Pagos de este ciclo' : 'Plan del próximo ciclo')}
+    <p class="gf" style="margin:0 4px 12px">Ciclo <b>${cycleLabel(k)}</b>: ${c.w.pay <= today() ? 'cobraste' : 'cobrás'} el ${dLabel(c.w.pay)} y con eso pagás todo lo que vence antes del ${dLabel(c.w.next)}.</p>
+    <div class="group">${field(c.estimado ? 'Lo que vas a cobrar' : 'Lo que cobraste', money('cpA', inc))}
       <label class="cell"><div class="tx"><div class="t">Usar el cofre</div><div class="s">${gs(S.funds.cofre)} de tus ventas</div></div><input type="checkbox" class="sw" id="cpC" data-change="cobroLive"></label></div>
-    <div id="cpList">${cobroList(inc ? +inc : st.base, false)}</div>
-    ${lt ? `<div class="note mt">${sym('gift')} <b>Aguinaldo${st.lumpMes ? ' (' + ymLabel(st.lumpMes) + ')' : ''}:</b> precancelás <b>${esc(debtName(lt))}</b> (${gs(loanSaldo(lt))} en cuotas; pedí el saldo de precancelación, suele ser menor). Sus cuotas desde ${ymLabel(st.lumpMes)} las cubre el aguinaldo.</div>` : ''}
-    <p class="gf">Tocá <b>Pagar</b> en cada línea a medida que pagás: queda registrado con la cuenta y se tacha del plan.</p>`);
+    <div id="cpList" class="mt">${cobroList(k, inc, false)}</div>
+    ${lt && !st.lumpRecibido ? `<div class="note mt"><b>Aguinaldo${st.lumpMes ? ' (' + ymLabel(st.lumpMes) + ')' : ''}:</b> precancelás <b>${esc(debtName(lt))}</b> (${gs(loanSaldo(lt))} en cuotas; pedí el saldo de precancelación, suele ser menor). Sus cuotas desde ${ymLabel(st.lumpMes)} las cubre el aguinaldo.</div>` : ''}
+    ${paid.length ? `<div class="gh">Ya pagado en este ciclo · ${gs(sum(paid, m => m.amt))}</div><div class="group ic">${paid.map(movRow).join('')}</div>` : ''}
+    <p class="gf">Tocá <b>Pagar</b> en cada línea a medida que pagás: queda registrado con su cuenta, se descuenta de tus gastos fijos y te confirma que todo cuadra.</p>`);
 }
 function cobroLive() {
   const v = parseN(($('#cpA') || {}).value), box = $('#cpList'); if (!box) return;
-  lsSet('libre-cobro-amt', String(v)); box.innerHTML = cobroList(v, !!($('#cpC') || {}).checked);
+  lsSet('libre-cobro-amt', String(v)); box.innerHTML = cobroList(COBRO_K || curCycle(), v, !!($('#cpC') || {}).checked);
 }
 let RETURN_TO = null;
 
@@ -2443,7 +2585,8 @@ function verifyChecks(m) {
     else ok(`${f.name}: pagado una sola vez en este ciclo`, `Cubre lo que vence el ${dLabel(dueInCycle(k, f.dia))} (ciclo del cobro del ${dLabel(cycleStart(k))})`);
     if (m.amt !== f.amt) warn(`Pagaste ${gs(m.amt)} y el gasto fijo dice ${gs(f.amt)}`, 'Si cambió el monto, tocá acá y actualizá el gasto fijo.', 'editFijo', f.id);
     if (m.t === 'gasto' && f.cat) {
-      const loose = M.filter(x => x.id !== m.id && x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k);
+      // Otro gasto suelto en el mismo sobre y de monto parecido: puede ser el mismo pago cargado dos veces
+      const loose = M.filter(x => x.id !== m.id && x.t === 'gasto' && !x.fijo && x.cat === f.cat && mCycle(x) === k && Math.abs(x.amt - f.amt) <= f.amt * 0.25);
       if (loose.length) warn(`Hay otro gasto en ${(S.budget.find(b => b.id === f.cat) || {}).name || 'el mismo sobre'}: ${gs(loose[0].amt)} el ${dLabel(loose[0].date)}`, '¿Es el mismo pago cargado dos veces?', 'movDetail', loose[0].id);
     }
   }
@@ -2577,28 +2720,34 @@ function cobrosSection() {
    Hojas: sobres, metas, IVA, fondos
    ========================================================================= */
 function budgetSheet(id) {
-  const b = id ? S.budget.find(x => x.id === id) : null, k = ym(today());
+  const b = id ? S.budget.find(x => x.id === id) : null, k = curCycle();
   const avg = b ? sum([1, 2, 3], i => monthSpent(b.id, addMonth(k, -i))) / 3 : 0;
   const custom = !b || b.id.startsWith('c_');
   const color = b ? b.color : 'blue';
+  const fs = b ? fijosOf(b.id) : [], auto = b && b.fijo && fs.length > 0; // sobre fijo: su monto es la suma de sus gastos fijos
+  const movs = b && !b.auto ? M.filter(m => m.t === 'gasto' && m.ambito !== 'negocio' && m.cat === b.id && mCycle(m) === k).sort(byDateDesc).slice(0, 8) : [];
   openSheet(`${head(b ? esc(b.name) : 'Nuevo sobre', b && b.auto ? '' : `<button class="link b" data-act="saveBudget" data-id="${id || ''}">Guardar</button>`)}
-    ${b ? `<div class="center" style="padding:4px 0 14px">${icoBox(b.sym, b.color, 'xl')}${big(fmt(monthSpent(b.id, k)) + '<span class="u">Gs</span>')}<small>gastado en ${MESES_L[+k.slice(5) - 1]} de ${gs(budAmt(b))}</small></div>` : ''}
-    ${b && b.why ? `<div class="card"><div class="why">${esc(b.why)}</div></div>` : ''}
+    ${b ? `<div class="center" style="padding:4px 0 14px">${icoBox(b.sym, b.color, 'xl')}${big(fmt(monthSpent(b.id, k)) + '<span class="u">Gs</span>')}<small>gastado de ${gs(budAmt(b))} · ciclo ${cycleLabel(k)}</small></div>
+      ${bar(budAmt(b) ? monthSpent(b.id, k) / budAmt(b) * 100 : 0, 'lg', `var(--${b.color})`)}` : ''}
+    ${b && b.why ? `<div class="card mt"><div class="why">${esc(b.why)}</div></div>` : ''}
+    ${fs.length ? `<div class="gh">Gastos fijos de este sobre</div><div class="group ic">${fs.map(fijoRow).join('')}</div>
+      <p class="gf">${auto ? 'El monto de este sobre es la suma de sus gastos fijos: para cambiarlo, editá cada uno.' : 'Estos gastos fijos salen de este sobre.'}</p>` : ''}
     ${b && b.auto ? '<p class="gf mt">Este monto sale de tus préstamos y se ajusta en Ingresos y ajustes del plan.</p>' : `
     <div class="group mt">
       ${custom ? field('Nombre', `<input id="bN" placeholder="Ej: Mascotas" value="${esc(b ? b.name : '')}">`) : ''}
-      ${field('Monto mensual', money('bAmt', b ? b.amt : ''))}
+      ${auto ? `<div class="cell"><div class="tx s2">Monto por ciclo</div><div class="v num">${gs(b.amt)}</div></div>` : field('Monto por ciclo', money('bAmt', b ? b.amt : ''))}
     </div>
-    ${b ? `<p class="gf">Promedio de los últimos 3 meses: <b>${gs(avg)}</b>.</p>` : ''}
+    ${b && !auto ? `<p class="gf">Promedio de los últimos 3 ciclos: <b>${gs(avg)}</b>.</p>` : ''}
+    ${movs.length ? `<div class="gh">Gastos de este ciclo</div><div class="group ic">${movs.map(movRow).join('')}</div>` : ''}
     ${custom ? `<div class="gh">Tipo</div><input type="hidden" id="bT" value="${b ? b.tipo : 'nec'}"><div class="seg">${[['nec', 'Necesidad'], ['deseo', 'Gusto']].map(([v, l]) => `<button class="${(b ? b.tipo : 'nec') === v ? 'on' : ''}" data-act="pick" data-target="bT" data-v="${v}">${l}</button>`).join('')}</div>
       <div class="gh">Ícono</div><div class="card" style="padding:14px">${symPicker('bS', b ? b.sym : 'tag', color)}</div>
       <div class="gh">Color</div><div class="card" style="padding:14px">${colorPicker('bC', color)}</div>` : ''}
     ${b && custom ? `<button class="btn w mt2" style="--c:var(--red)" data-act="delBudget" data-id="${b.id}">Eliminar sobre</button>` : ''}`}`);
 }
 function saveBudget(id) {
-  const amt = parseN($('#bAmt').value);
+  const inp = $('#bAmt'), amt = inp ? parseN(inp.value) : 0;
   if (id) {
-    const b = S.budget.find(x => x.id === id); b.amt = amt;
+    const b = S.budget.find(x => x.id === id); if (inp) b.amt = amt;
     if ($('#bN')) Object.assign(b, { name: $('#bN').value.trim() || b.name, tipo: $('#bT').value, sym: $('#bS').value, color: $('#bC').value });
   } else {
     const name = $('#bN').value.trim(); if (!name) return toast('Poné un nombre');
@@ -2690,8 +2839,8 @@ function settingsSheet() {
     <div class="group">${field('Cuotas fijas del plan', money('stCuotas', S.baseCuotas))}${field('Ataque extra / mes', money('stAtq', st.ataqueMensual))}</div>
     <p class="gf">Monto fijo para deudas = cuotas + ataque. Cuando cae un préstamo, su cuota se suma al ataque (no se baja este número).</p>
     <div class="gh">Cobro del sueldo</div>
-    <div class="group">${field('Día de cobro', `<input id="stDia" inputmode="numeric" placeholder="25" value="${st.diaCobro || ''}">`)}</div>
-    <p class="gf">El plan del día de cobro ordena lo que tenés que pagar hasta el cobro siguiente.</p>
+    <div class="group">${field('Día de cobro', `<input id="stDia" inputmode="numeric" placeholder="1" value="${st.diaCobro || ''}">`)}</div>
+    <p class="gf">Tus sobres, gastos fijos y pagos se miden por ciclo: desde ese día hasta el día anterior del mes siguiente. Vacío = mes calendario.</p>
     <div class="gh">Golpe anual (aguinaldo)</div>
     <div class="group">${field('Monto para atacar', money('stLump', st.lump))}${field('Mes', `<input id="stLumpMes" type="month" value="${esc(st.lumpMes)}">`)}
       ${field('Va a', `<select id="stLumpT"><option value="">El plan decide</option>${activeLoans().map(l => `<option value="${l.id}" ${st.lumpTarget === l.id ? 'selected' : ''}>Precancelar ${esc(debtName(l))}</option>`).join('')}</select>`)}
@@ -2755,7 +2904,7 @@ function rulesSheet() {
 }
 function promptText() {
   const st = S.settings, k = ym(today()), sm = monthSummary(k), iva = ivaMonth(k), ventas = inMonth(k, ['venta']);
-  const cats = S.budget.map(b => `- ${b.name}: presupuesto ${fmt(budAmt(b))} | gastado este mes ${fmt(monthSpent(b.id, k))}`).join('\n');
+  const cats = S.budget.map(b => `- ${b.name}: presupuesto ${fmt(budAmt(b))} | gastado en este ciclo ${fmt(monthSpent(b.id))}`).join('\n');
   const loans = S.loans.map(l => `- ${debtName(l)}: saldo ${fmt(loanSaldo(l))} | cuota ${fmt(l.cuota)} | cuotas restantes ${l.cuotas.filter(c => !c.paid).length} | termina ${lastDate(l) || 'pagado'} | TAE ${l.tae || 'sin dato'}`).join('\n') || '- (sin préstamos)';
   const provs = provGroups().filter(g => g.pend > 0).map(g => `- ${g.prov}: ${fmt(g.pend)} a pagar (${g.ps.filter(p => payPend(p) > 0).map(p => p.desc || 'compra').join(', ')})`).join('\n') || '- (al día)';
   const cards = S.cards.map(c => `- ${entOf(c) ? entOf(c) + ' · ' : ''}${c.name}: saldo ${fmt(c.saldo)} | línea ${fmt(c.linea)} | extracto ${fmt(c.extracto)} vence ${c.vence || '—'} | TAN ${c.tan || '—'}%`).join('\n') || '- (sin tarjetas)';
@@ -2779,13 +2928,13 @@ Proveedores (compras a crédito, se pagan con las ventas; no es deuda con inter�
 ${provs}
 Cuentas (dónde está la plata): ${S.accounts.map(a => a.name + ' ' + (a.ini == null ? 'sin saldo cargado' : fmt(acctBal(a)))).join(' | ') || 'sin cuentas cargadas'}
 Ventas por cobrar (te deben): ${fmt(sum(receivables(), m => m.amt))}
-Gastos hormiga del mes (compras de hasta ${fmt(hormigaMax())}): ${fmt(hormigaStats().tot)} en ${hormigaStats().n} compras
+Gastos hormiga del ciclo (compras de hasta ${fmt(hormigaMax())}): ${fmt(hormigaStats().tot)} en ${hormigaStats().n} compras
 Gastos fijos: ${S.fijos.map(f => f.name + ' ' + fmt(f.amt) + ' (día ' + f.dia + ', ' + (AMB_L[f.amb] || 'Personal') + ')').join(' | ') || 'sin cargar'}
 Préstamos nuevos: ${S.settings.sinPrestamosDesde ? 'ninguno desde ' + S.settings.sinPrestamosDesde + ' (compromiso: invertir solo de lo que gano)' : 'sin compromiso tomado'}
 Cofre: ${fmt(S.funds.cofre)} | Sobre IVA: ${fmt(S.funds.iva)}
 Metas:
 ${goals}
-Sobres del mes (${ymLabel(k)}):
+Sobres del ciclo de cobro (${cycleLabel(curCycle())}):
 ${cats}
 Mes: ingresos ${fmt(sm.ingresos)} | egresos ${fmt(sm.egresos)} | compras con tarjeta ${fmt(sm.tc)}
 Negocio: ${ventas.length} ventas por ${fmt(sum(ventas, m => m.amt))} | costo ${fmt(sum(ventas, m => m.costo || 0))} | ganancia real ${fmt(sum(ventas, ganancia))} | IVA débito ${fmt(iva.deb)} | IVA crédito ${fmt(iva.cred)}
@@ -2963,8 +3112,12 @@ const ACT = {
   tab: d => go(d.tab), close: () => closeSheet(), add: d => openAdd(d.t),
   reg: d => {
     const { k, v } = d;
-    if (k === 'cat') { REG.cat = v; $$('#sheet .chip[data-k=cat]').forEach(c => c.classList.toggle('on', c.dataset.v === v)); return; }
-    if (k === 'amb') { REG.amb = v; REG.medio = v === 'negocio' ? 'caja' : 'debito'; REG.iva = v === 'negocio' ? '10' : 'none'; }
+    // Al elegir un gasto fijo, si todavía no escribiste el monto se completa con el suyo
+    const prefill = id => { const f = fijo(id), a = $('#fAmt'); if (f && a && !parseN(a.value)) a.value = fmt(f.amt); };
+    REG.dupOk = false;
+    if (k === 'cat') { REG.cat = v; REG.fijo = defFijo(v); prefill(REG.fijo); }
+    else if (k === 'fijo') { REG.fijo = v; prefill(v); }
+    else if (k === 'amb') { REG.amb = v; REG.medio = v === 'negocio' ? 'caja' : 'debito'; REG.iva = v === 'negocio' ? '10' : 'none'; }
     else if (k === 'pay') { REG.pay = v; const p = payable(v); if (p) { const ci = $('#fCosto'); if (ci) ci.value = fmt(payPend(p)); REG.ivaC = p.iva || 'none'; } }
     else REG[k] = v;
     if (k === 'tipo' || k === 't') REG.touched = false;
@@ -3009,7 +3162,9 @@ const ACT = {
   fijo: d => fijoSheet(d.id), newFijo: () => fijoForm(), editFijo: d => fijoForm(d.id), fijoSug: d => fijoForm(null, +d.i),
   saveFijo: d => saveFijo(d.id), delFijo: (d, el) => armed(el) && delFijo(d.id),
   fijoPay: d => fijoPaySheet(d.id), doFijoPay: d => doFijoPay(d.id),
-  cobro: () => cobroSheet(),
+  cobro: d => cobroSheet(d.k === 'next' ? addMonth(curCycle(), 1) : curCycle()),
+  sobres: () => sobresSheet(), guide: () => guideSheet(),
+  barInfo: d => toast(d.t),
   verify: d => verifySheet(d.id), verifyDone: () => verifyDone(),
   verifyOk: d => { const ids = (d.accts || '').split(',').filter(Boolean); ids.forEach(i => { const a = acct(i); if (a) a.conc = today(); }); commit(); render(); haptic(15); toast('Todo correcto: ' + ids.map(acctName).join(' y ') + ' cuadra con tu banco'); verifyDone(); },
   linkFijo: d => linkFijo(d.id), editMov: d => editMovSheet(d.id), saveMovEdit: d => saveMovEdit(d.id),
@@ -3018,7 +3173,9 @@ const ACT = {
   commitNoLoans: () => { S.settings.sinPrestamosDesde = today(); addXP(50); confetti(); commit(); render(); toast('Compromiso tomado: cero préstamos nuevos. Desde hoy se invierte de lo que ganás.'); },
   cobroPay: d => {
     const sobre = id => { const b = S.budget.find(x => x.id === id); fijoForm(null, id === 'alquiler' ? 0 : undefined, { amt: b.amt, cat: b.id, name: id === 'alquiler' ? 'Alquiler' : b.name }); };
-    const f = { fijoPay: fijoPaySheet, payCuota: payCuotaSheet, payCard: payCardSheet, payable: payableSheet, sobre }[d.k]; if (f) { f(d.id); RETURN_TO = 'cobro'; }
+    const f = { fijoPay: fijoPaySheet, payCuota: payCuotaSheet, payCard: payCardSheet, payable: payableSheet, sobre }[d.k]; if (!f) return;
+    f(d.id, d.ck || undefined);
+    RETURN_TO = d.ret === '0' ? null : 'cobro'; // desde Hoy vuelve a Hoy; desde el plan vuelve al plan
   },
   unlock: () => tryUnlock(), lockLogout: async () => { hideLock(); if (BK && BK.kind === 'cloud') await Store.logout(); },
   moveFund: d => moveSheet(d.from, d.to), doMove: () => doMove(),
