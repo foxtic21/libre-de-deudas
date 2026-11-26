@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.8.0';
+import * as Store from './store.js?v=2.9.0';
 
 /* =========================================================================
    Utilidades
@@ -843,9 +843,10 @@ function cycleCard() {
     { id: 'deuda', name: 'Cuotas y tarjeta', done: c.deudaDone, pend: c.deudaPend, act: 'cobro' },
     { id: 'vivir', name: 'Para vivir', done: c.vivirDone, pend: c.vivirLeft, act: 'sobres' }
   ].concat(c.otros ? [{ id: 'neg', name: 'Negocio, de tu bolsillo', done: c.otros, pend: 0, act: 'tab', tab: 'negocio' }] : []);
-  // Barra: cada bloque es una parte de lo comprometido; la marca muestra hasta dónde llega lo que cobraste
-  const seg = g => { const v = g.done + g.pend, pc = v / scale * 100; return v > 0 ? `<i class="sg sg-${g.id}" style="width:${pc.toFixed(2)}%" title="${g.name}: ${gs(v)}">${pc >= 16 ? `<b>${gsK(v)}</b>` : ''}</i>` : ''; };
-  const libre = c.saldo > 0 ? `<i class="sg sg-libre" style="width:${(c.saldo / scale * 100).toFixed(2)}%" title="Te sobra: ${gs(c.saldo)}">${c.saldo / scale >= .16 ? `<b>${gsK(c.saldo)}</b>` : ''}</i>` : '';
+  // Barra: cada bloque es una parte de lo comprometido (ancho) y se llena con lo ya pagado o gastado;
+  // la marca muestra hasta dónde llega lo que cobraste
+  const seg = g => { const v = g.done + g.pend, pc = v / scale * 100; return v > 0 ? `<i class="sg" style="width:${pc.toFixed(2)}%;--c:var(--c-${g.id})" title="${g.name}: ${gs(g.done)} de ${gs(v)}"><u style="width:${clamp(g.done / v * 100, 0, 100).toFixed(1)}%"></u></i>` : ''; };
+  const libre = c.saldo > 0 ? `<i class="sg libre" style="width:${(c.saldo / scale * 100).toFixed(2)}%" title="Te sobra: ${gs(c.saldo)}"></i>` : '';
   const pendF = c.items.filter(x => x.grp === 'fijos'), pendD = c.items.filter(x => x.grp === 'deudas'), nF = S.fijos.filter(f => fijoCycle(f, c.k) === c.k).length;
   const perDay = c.daysLeft ? c.vivirLeft / c.daysLeft : c.vivirLeft;
   const note = {
@@ -857,17 +858,16 @@ function cycleCard() {
   const row = g => { const v = g.done + g.pend, pc = v ? g.done / v * 100 : 0;
     return `<button class="cyrow" data-act="${g.act}"${g.tab ? ` data-tab="${g.tab}"` : ''}><i class="swt sg-${g.id}"></i><div class="tx">
       <div class="row between"><span class="t">${g.name}</span><span class="num">${gsK(g.done)} <small>de ${gsK(v)}</small></span></div>
-      <div class="bar" style="--c:var(--c-${g.id})"><i style="width:${clamp(pc, 0, 100).toFixed(1)}%"></i></div>
       <small>${g.id === 'vivir' ? 'Gastado' : 'Pagado'} ${pc.toFixed(0)}% · ${note[g.id]}</small></div>${CHEV}</button>`; };
   const sub = c.estimado ? `Todavía no anotaste tu cobro de este ciclo: uso tu sueldo base (${gs(c.income)}).`
     : `Cobraste ${gs(c.income)}${c.cofreUsado ? ' + ' + gsK(c.cofreUsado) + ' del cofre' : ''} · comprometido ${gs(c.total)}.`;
   const tip = falta ? (cofre >= -c.saldo ? `Con el cofre (${gsK(cofre)}) lo cubrís y te quedan ${gs(cofre + c.saldo)}.` : cofre ? `Usando el cofre (${gsK(cofre)}) todavía faltan ${gs(-c.saldo - cofre)}: recortá sobres o sumá ventas.` : 'Recortá sobres o sumá ventas para cubrirlo.')
     : c.saldo > 0 ? 'Cubrís todo el ciclo. Lo que sobra va al cofre, no a gastos.' : 'Cubrís todo el ciclo justo.';
   return `<div class="card cycle">
-    <div class="row between"><div class="k-head">${sym('calendar')}Tu ciclo · ${cycleLabel(c.k)}</div><small>día ${c.day} de ${c.len}</small></div>
-    <div class="bignum num ${falta ? 'neg' : c.saldo > 0 ? 'pos' : ''}">${vu(fmt(Math.abs(c.saldo)))}</div>
-    <div class="cy-h">${falta ? 'te faltan para cubrir el ciclo' : c.saldo > 0 ? 'te sobran en este ciclo' : 'ciclo cubierto'}</div>
-    <div class="segwrap"><div class="segbar" role="img" aria-label="${groups.map(g => g.name + ' ' + gs(g.done + g.pend)).join(', ')}${c.saldo > 0 ? ', sobra ' + gs(c.saldo) : ''}">${groups.map(seg).join('')}${libre}</div>
+    <div class="row between"><span class="cap">Tu ciclo · ${cycleLabel(c.k)}</span><span class="cap">Día ${c.day} de ${c.len}</span></div>
+    <div class="cy-h">${falta ? 'Te faltan para cubrir el ciclo' : c.saldo > 0 ? 'Te sobran en este ciclo' : 'Ciclo cubierto'}</div>
+    <div class="hero num ${falta ? 'neg' : c.saldo > 0 ? 'pos' : ''}">${vu(fmt(Math.abs(c.saldo)))}</div>
+    <div class="segwrap"><div class="segbar meter" role="img" aria-label="${groups.map(g => g.name + ' ' + gs(g.done + g.pend)).join(', ')}${c.saldo > 0 ? ', sobra ' + gs(c.saldo) : ''}">${groups.map(seg).join('')}${libre}</div>
       ${falta && c.disp > 0 ? `<span class="segtick ${c.disp / scale > .75 ? 'r' : c.disp / scale < .25 ? 'l' : ''}" style="left:${(c.disp / scale * 100).toFixed(2)}%"><em>${c.estimado ? 'hasta acá llega tu sueldo' : 'hasta acá llega lo que cobraste'}</em></span>` : ''}</div>
     <div class="cyrows">${groups.map(row).join('')}</div>
     <p class="cy-foot">${sub} ${tip}</p>
@@ -889,8 +889,8 @@ function pagosSection() {
   if (!items.length && !paid.length) return '';
   const row = x => { const dd = daysBetween(today(), x.d), col = dd < 0 ? 'red' : dd <= 5 ? 'orange' : 'label2';
     const txt = dd < 0 ? 'vencido hace ' + (-dd) + (dd === -1 ? ' día' : ' días') : dd === 0 ? 'vence hoy' : dd === 1 ? 'vence mañana' : 'vence el ' + dLabel(x.d);
-    return `<div class="cell pago">${icoBox(x.icon, x.color)}<div class="tx"><div class="t">${esc(x.t)}</div><div class="s"><span style="color:var(--${col})">${txt}</span> · <span class="num">${gs(x.a)}</span></div></div>
-      <button class="btn sm p" style="--c:var(--green)" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}" data-ck="${x.ck || ''}" data-ret="0">Pagar</button></div>`; };
+    return `<button class="cell pago" data-act="cobroPay" data-k="${x.act}" data-id="${x.id}" data-ck="${x.ck || ''}" data-ret="0">${icoBox(x.icon, x.color)}<div class="tx"><div class="t">${esc(x.t)}</div><div class="s" style="color:var(--${col})">${cap(txt)}</div></div>
+      <div class="v"><span class="num">${fmt(x.a)}</span><small class="payl">Pagar</small></div></button>`; };
   return sh('Falta pagar en este ciclo', '<button class="link" data-act="cobro">Ver plan</button>') +
     `<div class="group ic">${items.length ? items.slice(0, 5).map(row).join('') : `<div class="cell">${icoBox('check', 'green')}<div class="tx"><div class="t">Todo pagado</div><div class="s">No te queda nada por pagar hasta el ${dLabel(cycleNext(k))}</div></div></div>`}
       ${items.length > 5 ? `<button class="cell" data-act="cobro"><div class="tx" style="color:var(--blue)">Ver los ${items.length} pagos pendientes</div>${CHEV}</button>` : ''}
@@ -1529,7 +1529,7 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.8.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.9.0</p>`;
 }
 
 /* =========================================================================

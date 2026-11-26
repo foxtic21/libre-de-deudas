@@ -1,9 +1,9 @@
 // Libre · service worker: guarda la app en el dispositivo para que abra y funcione sin internet.
 // Los datos sin conexión los maneja Firestore (caché local + cola de escrituras que se suben al volver).
-const VERSION = 'libre-2.8.0';
+const VERSION = 'libre-2.9.0';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
-  './config.js?v=2.8.0', './assets/styles.css?v=2.8.0', './assets/app.js?v=2.8.0', './assets/store.js?v=2.8.0',
+  './config.js?v=2.9.0', './assets/styles.css?v=2.9.0', './assets/app.js?v=2.9.0', './assets/store.js?v=2.9.0',
   './assets/icon.svg', './assets/icon-180.png', './assets/icon-512.png'
 ];
 const FIREBASE = ['firebase-app.js', 'firebase-auth.js', 'firebase-firestore.js'].map(f => 'https://www.gstatic.com/firebasejs/10.12.2/' + f);
