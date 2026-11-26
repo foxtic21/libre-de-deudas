@@ -1,5 +1,5 @@
 // Libre · matá la deuda como en un juego, emprendé y desbloqueá tus viajes.
-import * as Store from './store.js?v=2.6.0';
+import * as Store from './store.js?v=2.7.0';
 
 /* =========================================================================
    Utilidades
@@ -319,7 +319,7 @@ function acctFlows(m) {
     case 'gasto': if (m.medio !== 'tc' && m.cuenta) out.push([m.cuenta, -m.amt, ts]); break;
     case 'cuota': case 'ataque': case 'precancel': case 'pagotc': case 'pagoiva': case 'pagoprov': case 'aporte':
       if (m.cuenta) out.push([m.cuenta, -m.amt, ts]); break;
-    case 'transf': out.push([m.from, -m.amt, ts], [m.to, m.amt, ts]); break;
+    case 'transf': out.push([m.from, -(m.amt + (m.fee || 0)), ts], [m.to, m.amt, ts]); break;
     case 'ajuste': out.push([m.cuenta, (m.dir || 1) * m.amt, ts]); break;
   }
   return out;
@@ -1410,7 +1410,7 @@ function vPlan() {
     ${cellLink('settings', 'gear', 'gray', 'Ingresos y ajustes del plan')}
     <button class="cell" data-act="account">${icoBox('cloud', 'blue')}<div class="tx"><div class="t">Cuenta y datos</div><div class="s"><span class="sync ${cloud ? 'ok' : 'local'}" id="syncDot"></span>${cloud ? esc(USER && USER.email) : 'Solo en este dispositivo'}</div></div>${CHEV}</button>
   </div>
-  <p class="gf center" style="margin-top:26px">Libre · v2.6.0</p>`;
+  <p class="gf center" style="margin-top:26px">Libre · v2.7.0</p>`;
 }
 
 /* =========================================================================
@@ -1420,7 +1420,7 @@ let REG = { t: 'gasto', amb: 'personal', cat: 'super', medio: 'debito', card: ''
 function openAdd(t, o = {}) {
   if (t) REG.t = t;
   REG.touched = false; REG.pct = null; REG.d = { date: today() }; REG.pay = 'new'; REG.provPaid = 'si';
-  REG.cob = 'si'; REG.cuenta = acctDefault(); REG.cuentaProv = ''; REG.origen = '';
+  REG.cob = 'si'; REG.cuenta = acctDefault(); REG.cuentaProv = ''; REG.origen = ''; REG.dupOk = false;
   if (!S.cards.find(c => c.id === REG.card)) REG.card = S.cards[0] ? S.cards[0].id : '';
   if (!S.budget.find(b => b.id === REG.cat && b.id !== 'cuotas')) REG.cat = (S.budget.find(b => b.id !== 'cuotas') || {}).id;
   const p = o.pay && payable(o.pay);
@@ -1506,6 +1506,7 @@ function addHtml() {
     ${field('Fecha', `<input id="fDate" type="date" value="${esc(d.date || today())}">`)}
     ${field('Nota', `<input id="fNote" placeholder="Opcional" value="${esc(d.note || '')}">`)}
   </div>
+  <div id="dupWarn" class="mt2"></div>
   <button class="btn p w mt2" data-act="saveAdd">Guardar ${t === 'gasto' ? 'gasto' : t === 'ingreso' ? 'ingreso' : 'venta'}</button>`;
 }
 // Venta: a qué proveedor le pagás el costo (match con su deuda)
@@ -1579,6 +1580,17 @@ function saveAdd() {
     m.iva = REG.iva; m.ivaAmt = ivaOf(amt, REG.iva);
     if (m.medio !== 'tc' && REG.cuenta && acct(REG.cuenta)) { m.cuenta = REG.cuenta; lsSet('libre-acct', REG.cuenta); }
     if (m.medio !== 'tc' && REG.origen && loan(REG.origen)) m.origen = REG.origen;
+    // Match con el gasto fijo del mismo sobre (ej.: alquiler) y freno a los pagos repetidos
+    const f = m.ambito === 'personal' ? S.fijos.find(x => x.amb === 'personal' && x.cat === m.cat) : null;
+    const twin = M.find(x => x.t === 'gasto' && x.amt === amt && x.cat === m.cat && Math.abs(daysBetween(x.date, date)) <= 2);
+    const k = f ? cycleOf(date) : '', prev = f && M.find(x => (x.fijo === f.id && (x.ciclo || cycleOf(x.date)) === k) || (x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k));
+    const dup = prev || twin;
+    if (dup && !REG.dupOk) {
+      REG.dupOk = true;
+      const w = $('#dupWarn'); if (w) w.innerHTML = `<div class="note" style="background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ojo: ${prev && f ? esc(f.name) + ' ya está pagado en este ciclo' : 'ya hay un gasto igual'}</b> (${dLabel(dup.date)} · ${gs(dup.amt)}). Si es otro pago distinto, tocá Guardar de nuevo.</div>`;
+      haptic(30); return toast('Parece un pago repetido: revisalo antes de guardar');
+    }
+    if (f && !prev) { m.fijo = f.id; m.ciclo = k; }
     applyMov(m); addXP(5);
     if (m.ambito === 'personal') {
       const b = S.budget.find(x => x.id === m.cat), spent = monthSpent(m.cat, ym(date)) + amt;
@@ -1625,6 +1637,8 @@ function saveAdd() {
       : 'Venta registrada · te deben ' + gs(amt);
   }
   M.push(m); checkin(); toast(msg); haptic(12); checkAch();
+  // Los pagos de gastos fijos muestran la verificación "todo correcto"
+  if (m.fijo) { commit({ add: [m] }); render(); return verifySheet(m.id); }
   commit({ add: [m] }); closeSheet(); render();
 }
 function diaCero() {
@@ -1668,13 +1682,18 @@ function movDetail(id) {
   if (m.t === 'ajuste') rows.push(['Cuenta', esc(acctName(m.cuenta))]);
   if (m.t === 'precancel' && m.ahorro) rows.push(['Ahorro en intereses', gs(m.ahorro)]);
   if (m.note) rows.push(['Nota', esc(m.note)]);
-  openSheet(`${head('Detalle')}
+  if (m.t === 'transf' && m.fee) rows.push(['Comisión del banco', gs(m.fee)]);
+  if (m.fijo && fijo(m.fijo)) rows.push(['Gasto fijo', `<button class="link" data-act="fijo" data-id="${m.fijo}">${esc(fijo(m.fijo).name)} · ciclo del ${dLabel(cycleStart(m.ciclo || cycleOf(m.date)))}</button>`]);
+  const fl = fijoFor(m);
+  openSheet(`${head('Detalle', m.t === 'cero' ? '' : `<button class="link" data-act="editMov" data-id="${m.id}">Editar</button>`)}
     <div class="center" style="padding:6px 0 18px"><span class="ico xl" style="--c:var(--${mm.color});margin:0 auto">${sym(mm.icon)}</span>
       <div class="mt" style="font-size:17px;font-weight:600">${esc(mm.title)}</div>
       ${m.t === 'cero' ? '' : big((mm.sign < 0 ? '−' : mm.sign > 0 ? '+' : '') + fmt(m.amt) + '<span class="u">Gs</span>', mm.sign > 0 ? 'pos' : '')}</div>
     <div class="group">${rows.map(r => `<div class="cell"><div class="tx s2">${r[0]}</div><div class="v">${r[1]}</div></div>`).join('')}</div>
     ${m.t === 'venta' && m.costo && (m.costoA || 'proveedor') === 'proveedor' && !(m.payable && payable(m.payable))
       ? `<button class="btn p w mt2" style="--c:var(--indigo)" data-act="assignProv" data-id="${m.id}">${sym('box')}Asignar proveedor y hacer el match</button>` : ''}
+    ${fl ? `<button class="btn p w mt2" style="--c:var(--${fl.color || 'blue'})" data-act="linkFijo" data-id="${m.id}">${sym('link')}Es el pago de ${esc(fl.name)} (match)</button>` : ''}
+    ${m.t !== 'cero' ? `<button class="btn w mt2" style="--c:var(--green)" data-act="verify" data-id="${m.id}">${sym('check')}Verificar que esté todo correcto</button>` : ''}
     ${m.t === 'venta' && m.cobrada === false ? `<button class="btn p w mt2" style="--c:var(--green)" data-act="cobrar" data-id="${m.id}">${sym('check')}Ya me pagaron</button>` : ''}
     ${m.t === 'venta' && m.cobrada !== false ? `<button class="btn w mt2" style="--c:var(--orange)" data-act="undoCobro" data-id="${m.id}">Marcar como no cobrada</button>` : ''}
     <button class="btn w mt2" style="--c:var(--red)" data-act="delMov" data-id="${m.id}">Eliminar movimiento</button>
@@ -1704,7 +1723,7 @@ function doPayCuota(id) {
   const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'cuota', loan: l.id, n: c.n, note: l.name + ' · cuota ' + c.n, cuenta: pickedAcct('sCta'), origen: pickedOrig('sOrig') };
   M.push(m); addXP(20); checkin(); haptic(15);
   if (loanSaldo(l) <= 0) { toast(l.name + ' derrotado'); confetti(); } else toast('−' + gs(amt) + ' de vida a ' + l.name);
-  checkAch(); commit({ add: [m] }); closeSheet(); render();
+  checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
 }
 function attackSheet(id) {
   const l = loan(id), s = loanSaldo(l);
@@ -1729,7 +1748,7 @@ function doAttack(id) {
   const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'ataque', loan: l.id, note: l.name, undo: diffUndo(before, l), fromCofre, cuenta: pickedAcct('sCta'), origen: pickedOrig('sOrig') };
   M.push(m); addXP(20 + Math.floor(amt / 100000)); checkin(); haptic(25); confetti();
   toast(loanSaldo(l) <= 0 ? l.name + ' derrotado' : 'Golpe de ' + gs(amt));
-  checkAch(); commit({ add: [m] }); closeSheet(); render();
+  checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
 }
 function precancelSheet(id) {
   const l = loan(id), s = loanSaldo(l);
@@ -1750,7 +1769,7 @@ function doPrecancel(id) {
   const m = { id: uid(), ts: Date.now(), date: today(), amt: paid, t: 'precancel', loan: l.id, note: l.name, ahorro, undo: diffUndo(before, l), fromCofre, cuenta: pickedAcct('sCta'), origen: pickedOrig('sOrig') };
   M.push(m); addXP(100); checkin(); haptic(40); confetti(); setTimeout(confetti, 600);
   toast('Golpe crítico: te ahorraste ' + gs(ahorro)); unlock('critico');
-  checkAch(); commit({ add: [m] }); closeSheet(); render();
+  checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
 }
 function loanDetail(id) {
   const l = loan(id), s = loanSaldo(l), dead = s <= 0;
@@ -1925,7 +1944,7 @@ function doPayCard(id) {
   c.saldo = Math.max(0, c.saldo - amt); SIM = null;
   const full = amt >= c.extracto; M.push(m); addXP(full ? 40 : 10); checkin();
   if (full) { c.extracto = 0; unlock('tc'); toast('Extracto pagado completo'); } else toast('Pagaste menos que el total: habrá intereses sobre ' + gs(c.extracto - amt));
-  checkAch(); commit({ add: [m] }); closeSheet(); render();
+  checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
 }
 
 /* =========================================================================
@@ -2003,7 +2022,10 @@ function fijoSheet(id) {
 }
 function fijoPaySheet(id) {
   const f = fijo(id); if (!f) return;
+  const k = fijoCycle(f), loose = f.amb === 'personal' && f.cat ? M.find(x => x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k) : null, paid = fijoPaid(f, k);
   openSheet(`${head('Pagar ' + esc(f.name), `<button class="link b" data-act="doFijoPay" data-id="${id}">Guardar</button>`, `<button class="link" data-act="fijo" data-id="${id}">Atrás</button>`)}
+    ${paid ? `<div class="note" style="margin-bottom:12px;background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ya está pagado en este ciclo</b>: ${gs(paid.amt)} el ${dLabel(paid.date)}. Guardá solo si es otro pago distinto.</div>` : ''}
+    ${loose && !paid ? `<div class="note" style="margin-bottom:12px;background:color-mix(in srgb,var(--orange) 14%,transparent)"><b>Ya cargaste ${gs(loose.amt)} en ${esc((S.budget.find(b => b.id === f.cat) || {}).name || 'este sobre')} el ${dLabel(loose.date)}.</b> Si es este mismo pago, no lo pagues de nuevo: unilo al gasto fijo.<br><button class="btn sm mt" style="--c:var(--${f.color || 'blue'})" data-act="linkFijo" data-id="${loose.id}">${sym('link')}Unir ese pago (match)</button></div>` : ''}
     <div class="group">${field('Monto pagado', money('fpA', f.amt))}${field('Fecha', `<input id="fpD" type="date" value="${today()}">`)}</div>
     ${acctPicker('fpCta', 'Pagado desde', f.cuenta && acct(f.cuenta) ? f.cuenta : acctDefault())}${origPicker('fpOrig')}
     <button class="btn p w mt2" style="--c:var(--green)" data-act="doFijoPay" data-id="${id}">Confirmar pago</button>`);
@@ -2014,13 +2036,13 @@ function doFijoPay(id) {
   if (f.amb === 'ahorro') {
     if (!goal(f.goal)) { const g = APORTES_GOAL(); Object.assign(g, GOAL_META.aportes); S.goals.splice(2, 0, g); f.goal = 'aportes'; }
     const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'aporte', goal: f.goal, cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: fijoCycle(f), note: f.name };
-    applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] }); closeSheet(); render();
+    applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
     return toast(f.name + ' · +' + gs(amt) + ' a ' + goal(f.goal).name);
   }
   const neg = f.amb === 'negocio', iva = neg ? f.iva || '10' : 'none';
   const m = { id: uid(), ts: Date.now(), date: $('#fpD').value || today(), amt, t: 'gasto', ambito: neg ? 'negocio' : 'personal', medio: 'debito', cat: neg ? 'negocio' : f.cat,
     iva, ivaAmt: ivaOf(amt, iva), cuenta: pickedAcct('fpCta'), origen: pickedOrig('fpOrig'), fijo: id, ciclo: fijoCycle(f), note: f.name };
-  applyMov(m); M.push(m); addXP(10); checkin(); haptic(12); checkAch(); commit({ add: [m] }); closeSheet(); render();
+  applyMov(m); M.push(m); addXP(10); checkin(); haptic(12); checkAch(); commit({ add: [m] }); render(); verifySheet(m.id);
   toast(f.name + ' pagado · ' + gs(amt));
 }
 // Plan del día de cobro: qué pagar y en qué orden con lo que cobrás
@@ -2195,7 +2217,7 @@ function doPayProv(id) {
   const m = { id: uid(), ts: Date.now(), date: $('#ppD').value || today(), amt, t: 'pagoprov', payable: p.id, prov: p.prov, src: $('#ppS').value, note: p.desc || '', cuenta: pickedAcct('ppCta'), origen: pickedOrig('ppOrig') };
   applyMov(m); M.push(m); addXP(15); checkin(); haptic(12); checkAch(); commit({ add: [m] });
   toast(payPend(p) <= 0 ? 'Deuda con ' + p.prov + ' cancelada' : 'Pago registrado · quedan ' + gs(payPend(p)));
-  payableSheet(id); render();
+  render(); verifySheet(m.id);
 }
 function undoPago(pid, xid) {
   const p = payable(pid), x = p && p.pagos.find(y => y.id === xid); if (!x) return;
@@ -2374,7 +2396,9 @@ function acctForm(id) {
   const color = a ? a.color : ['green', 'orange', 'blue', 'teal', 'purple', 'pink'][S.accounts.length % 6];
   openSheet(`${head(a ? 'Editar cuenta' : 'Nueva cuenta', `<button class="link b" data-act="saveAcct" data-id="${id || ''}">Guardar</button>`, '<button class="link" data-act="close">Cancelar</button>')}
     <div class="group">${field('Nombre', `<input id="acN" list="dlBank" placeholder="Ej: Banco…" autocomplete="off" value="${esc(a ? a.name : '')}">`)}
-      ${a ? '' : field('Saldo actual', money('acS', '', 'Opcional'))}</div>${dlist('dlBank', BANKS)}
+      ${a ? '' : field('Saldo actual', money('acS', '', 'Opcional'))}
+      ${a && a.ini != null ? field(a.iniTs === 0 ? 'Lo que ya tenías' : 'Saldo inicial', money('acIni', a.ini, '0')) : ''}</div>${dlist('dlBank', BANKS)}
+    ${a && a.ini != null ? `<p class="gf">${a.iniTs === 0 ? 'Lo que había en la cuenta antes de todos los movimientos que registraste en ella.' : 'El saldo que cargaste el ' + dLabel(a.iniD) + '.'} Cambialo solo si estaba mal: el saldo de la app se recalcula con todos los movimientos.</p>` : ''}
     <div class="gh">Tipo</div><input type="hidden" id="acK" value="${kind}">
     <div class="seg">${[['banco', 'Banco o cooperativa'], ['efectivo', 'Efectivo'], ['billetera', 'Billetera']].map(([v, l]) => `<button class="${v === kind ? 'on' : ''}" data-act="pick" data-target="acK" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="gh">Color</div><div class="card" style="padding:14px">${colorPicker('acC', color)}</div>
@@ -2383,7 +2407,7 @@ function acctForm(id) {
 function saveAcct(id) {
   const name = $('#acN').value.trim(); if (!name) return toast('Poné un nombre');
   const v = { name, kind: $('#acK').value, color: $('#acC').value };
-  if (id) Object.assign(acct(id), v);
+  if (id) { const a = acct(id); Object.assign(a, v); if ($('#acIni') && a.ini != null) a.ini = parseN($('#acIni').value); }
   else {
     const raw = $('#acS').value.trim(), a = Object.assign({ id: uid(), ini: null, iniTs: 0, iniD: '', conc: '' }, v);
     if (raw) Object.assign(a, { ini: parseN(raw), iniTs: Date.now(), iniD: today(), conc: today() });
@@ -2398,16 +2422,100 @@ function delAcct(id) {
 function transfSheet(from) {
   const others = S.accounts.filter(a => a.id !== from); if (!others.length) return toast('Agregá otra cuenta para transferir');
   openSheet(`${head('Transferir', `<button class="link b" data-act="doTransf" data-id="${from}">Guardar</button>`, `<button class="link" data-act="acct" data-id="${from}">Atrás</button>`)}
-    <div class="group"><div class="cell"><div class="tx s2">Desde</div><div class="v">${esc(acct(from).name)}</div></div>${field('Monto', money('tfA'))}${field('Fecha', `<input id="tfD" type="date" value="${today()}">`)}</div>
+    <div class="group"><div class="cell"><div class="tx s2">Desde</div><div class="v">${esc(acct(from).name)}</div></div>${field('Monto', money('tfA'))}${field('Comisión del banco', money('tfF', '', 'Si cobró'))}${field('Fecha', `<input id="tfD" type="date" value="${today()}">`)}</div>
     <div class="gh">Hacia</div><input type="hidden" id="tfT" value="${others[0].id}">
     <div class="chips">${others.map((a, i) => `<button class="chip ${i ? '' : 'on'}" data-act="pick" data-target="tfT" data-v="${a.id}" style="--c:var(--${a.color})"><span class="chip-ic">${sym(acctIcon(a))}</span>${esc(a.name)}</button>`).join('')}</div>
     <button class="btn p w mt2" data-act="doTransf" data-id="${from}">Transferir</button>`);
 }
 function doTransf(from) {
   const amt = parseN($('#tfA').value), to = $('#tfT').value; if (!amt || !to) return toast('Ingresá el monto');
-  const m = { id: uid(), ts: Date.now(), date: $('#tfD').value || today(), amt, t: 'transf', from, to };
-  M.push(m); checkin(); commit({ add: [m] }); render(); acctSheet(from); toast('Transferiste ' + gs(amt) + ' a ' + acctName(to));
+  const fee = parseN(($('#tfF') || {}).value);
+  const m = { id: uid(), ts: Date.now(), date: $('#tfD').value || today(), amt, t: 'transf', from, to, fee };
+  M.push(m); checkin(); commit({ add: [m] }); render(); verifySheet(m.id);
 }
+/* ---------- Match y verificación después de cada pago: "todo correcto" o qué revisar ---------- */
+function verifyChecks(m) {
+  const out = [], ok = (t, s = '') => out.push({ ok: true, t, s }), warn = (t, s = '', act = '', id = '') => out.push({ ok: false, t, s, act, id });
+  const f = m.fijo && fijo(m.fijo);
+  if (f) {
+    const k = m.ciclo || cycleOf(m.date), pays = M.filter(x => x.fijo === f.id && (x.ciclo || cycleOf(x.date)) === k);
+    if (pays.length > 1) warn(`${f.name}: hay ${pays.length} pagos en el mismo ciclo`, 'Si pagaste una sola vez, abrí el otro y borralo.', 'movDetail', pays.find(x => x.id !== m.id).id);
+    else ok(`${f.name}: pagado una sola vez en este ciclo`, `Cubre lo que vence el ${dLabel(dueInCycle(k, f.dia))} (ciclo del cobro del ${dLabel(cycleStart(k))})`);
+    if (m.amt !== f.amt) warn(`Pagaste ${gs(m.amt)} y el gasto fijo dice ${gs(f.amt)}`, 'Si cambió el monto, tocá acá y actualizá el gasto fijo.', 'editFijo', f.id);
+    if (m.t === 'gasto' && f.cat) {
+      const loose = M.filter(x => x.id !== m.id && x.t === 'gasto' && !x.fijo && x.cat === f.cat && cycleOf(x.date) === k);
+      if (loose.length) warn(`Hay otro gasto en ${(S.budget.find(b => b.id === f.cat) || {}).name || 'el mismo sobre'}: ${gs(loose[0].amt)} el ${dLabel(loose[0].date)}`, '¿Es el mismo pago cargado dos veces?', 'movDetail', loose[0].id);
+    }
+  }
+  if (m.t === 'cuota') { const l = loan(m.loan); if (l) ok(`Cuota ${m.n} de ${debtName(l)}: pagada`, `Quedan ${l.cuotas.filter(c => !c.paid).length} cuotas · saldo ${gs(loanSaldo(l))}`); }
+  if (m.t === 'pagotc') { const c = card(m.card); if (c) ok(`${c.name}: debés ${gs(c.saldo)}`, c.extracto > 0 ? `Del extracto faltan ${gs(c.extracto)}: pagalo antes del ${dLabel(c.vence)}` : 'Extracto pagado completo: sin intereses'); }
+  if (m.t === 'pagoprov') { const p = payable(m.payable); if (p) ok(`${p.prov}: ${payPend(p) > 0 ? 'quedan ' + gs(payPend(p)) : 'deuda cancelada (match)'}`); }
+  if (m.t === 'aporte' && goal(m.goal)) ok(`${goal(m.goal).name}: ${gs(goal(m.goal).saved)} acumulados`);
+  if (m.t === 'transf') ok(`${acctName(m.from)} → ${acctName(m.to)}: ${gs(m.amt)}`, m.fee ? 'Más ' + gs(m.fee) + ' de comisión del banco' : 'Sin comisión');
+  const key = x => x.cat || x.loan || x.card || x.payable || x.goal || x.to || '';
+  const twin = M.find(x => x.id !== m.id && x.t === m.t && x.amt === m.amt && Math.abs(daysBetween(x.date, m.date)) <= 2 && key(x) === key(m) && !(m.t === 'cuota' && x.n !== m.n));
+  if (twin) warn(`Hay otro movimiento igual el ${dLabel(twin.date)}`, `${movMeta(twin).title} · ${gs(twin.amt)}. ¿Lo cargaste dos veces?`, 'movDetail', twin.id);
+  const flows = acctFlows(m).filter(x => x[0] && acct(x[0]));
+  flows.forEach(x => { const a = acct(x[0]); out.push({ ok: true, acct: a.id, t: `${x[1] < 0 ? 'Salió de' : 'Entró en'} ${a.name}: ${gs(Math.abs(x[1]))}`, s: `En la app ${a.name} queda en ${gs(acctBal(a))}. ¿Tu banco dice lo mismo?` }); });
+  if (!flows.length && S.accounts.length && ['gasto', 'cuota', 'ataque', 'precancel', 'pagotc', 'pagoiva', 'pagoprov', 'aporte', 'ingreso'].includes(m.t) && m.medio !== 'tc')
+    warn('No tiene cuenta', 'Elegí de qué cuenta salió para que los saldos cuadren.', 'movAcct', m.id);
+  return out;
+}
+let VRET = null;
+function verifySheet(id) {
+  const m = M.find(x => x.id === id); if (!m) return closeSheet();
+  VRET = RETURN_TO;
+  const cs = verifyChecks(m), bad = cs.filter(c => !c.ok), accs = cs.filter(c => c.acct);
+  openSheet(`${head(bad.length ? 'Revisá esto' : 'Todo correcto')}
+    <div class="center" style="padding:4px 0 12px">${icoBox(bad.length ? 'bolt' : 'check', bad.length ? 'orange' : 'green', 'xl')}<div class="mt" style="font-size:17px;font-weight:600">${esc(movMeta(m).title)}</div>${big(fmt(m.amt) + '<span class="u">Gs</span>')}<small>${dLabel(m.date)}</small></div>
+    <div class="group ic">${cs.map(c => { const tag = c.act ? 'button' : 'div';
+      return `<${tag} class="cell vchk"${c.act ? ` data-act="${c.act}" data-id="${c.id}"` : ''}>${icoBox(c.ok ? 'check' : 'bolt', c.ok ? 'green' : 'orange')}<div class="tx"><div class="t">${esc(c.t)}</div>${c.s ? `<div class="s">${esc(c.s)}</div>` : ''}</div>${c.act ? CHEV : ''}</${tag}>`; }).join('')}</div>
+    ${accs.length ? `<div class="btns mt2"><button class="btn p" style="--c:var(--green)" data-act="verifyOk" data-accts="${accs.map(c => c.acct).join(',')}">${sym('check')}Sí, coincide</button><button class="btn" data-act="conc" data-id="${accs[0].acct}">No, conciliar</button></div>` : ''}
+    <button class="btn w mt" data-act="verifyDone">${accs.length ? 'Después lo reviso' : 'Listo'}</button>`);
+}
+function verifyDone() { const r = VRET; VRET = null; if (r === 'cobro') cobroSheet(); else closeSheet(); }
+// Unir un gasto suelto a su gasto fijo (ej.: un alquiler cargado a mano)
+const fijoFor = m => m.t === 'gasto' && m.ambito !== 'negocio' && !m.fijo ? S.fijos.find(f => f.amb === 'personal' && f.cat === m.cat) : null;
+function linkFijo(id) {
+  const m = M.find(x => x.id === id), f = m && fijoFor(m); if (!f) return;
+  m.fijo = f.id; m.ciclo = cycleOf(m.date); commit({ add: [m] }); render(); verifySheet(id);
+}
+// Editar un movimiento: monto, fecha, nota y sobre. Los que mueven cronogramas (cuotas, ataques, ventas) solo fecha y nota.
+const AMT_EDIT = ['gasto', 'ingreso', 'aporte', 'retiro', 'transf', 'pagoprov', 'pagoiva', 'ajuste', 'mover'];
+function editMovSheet(id) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const canAmt = AMT_EDIT.includes(m.t), cats = S.budget.filter(b => b.id !== 'cuotas');
+  openSheet(`${head('Editar movimiento', `<button class="link b" data-act="saveMovEdit" data-id="${id}">Guardar</button>`, `<button class="link" data-act="movDetail" data-id="${id}">Atrás</button>`)}
+    <p class="gf" style="margin:0 4px 10px">${esc(movMeta(m).title)}</p>
+    <div class="group">
+      ${canAmt ? field('Monto', money('emA', m.amt)) : ''}
+      ${m.t === 'transf' ? field('Comisión del banco', money('emF', m.fee || '', '0')) : ''}
+      ${field('Fecha', `<input id="emD" type="date" value="${esc(m.date)}">`)}
+      ${m.t === 'gasto' && m.ambito !== 'negocio' ? field('Sobre', `<select id="emC">${cats.map(b => `<option value="${b.id}" ${b.id === m.cat ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>`) : ''}
+      ${field('Nota', `<input id="emN" placeholder="Opcional" value="${esc(m.note || '')}">`)}
+    </div>
+    ${canAmt ? '' : '<p class="gf">El monto de este movimiento no se edita porque mueve un cronograma o una venta: si está mal, borralo y cargalo de nuevo.</p>'}
+    <p class="gf">La cuenta se cambia desde el detalle (tocando el nombre de la cuenta).</p>
+    <button class="btn p w mt2" data-act="saveMovEdit" data-id="${id}">Guardar cambios</button>`);
+}
+function saveMovEdit(id) {
+  const m = M.find(x => x.id === id); if (!m) return;
+  const canAmt = AMT_EDIT.includes(m.t);
+  if (canAmt) {
+    const amt = parseN($('#emA').value); if (!amt) return toast('Ingresá el monto');
+    revertMov(m);
+    m.amt = amt;
+    if (m.t === 'transf') m.fee = parseN(($('#emF') || {}).value);
+    if (m.t === 'gasto') m.ivaAmt = ivaOf(amt, m.iva);
+    if (m.t === 'pagoiva') m.fromRes = Math.max(0, Math.min(S.funds.iva, amt));
+    if ($('#emC')) m.cat = $('#emC').value;
+    applyMov(m);
+  }
+  m.date = $('#emD').value || m.date; m.note = $('#emN').value.trim();
+  if (m.t === 'venta' && m.cobD && m.cobD < m.date) m.cobD = m.date;
+  SIM = null; checkAch(); commit({ add: [m] }); render(); verifySheet(id); toast('Movimiento actualizado');
+}
+
 // Cambiar la cuenta de un movimiento ya cargado
 function movAcctSheet(id, f = 'cuenta') {
   const m = M.find(x => x.id === id); if (!m) return;
@@ -2550,7 +2658,7 @@ function ivaSheet() {
 function doPayIva() {
   const amt = parseN($('#ivA').value); if (!amt) return toast('Ingresá un monto');
   const m = { id: uid(), ts: Date.now(), date: today(), amt, t: 'pagoiva', periodo: $('#ivP').value, fromRes: Math.max(0, Math.min(S.funds.iva, amt)), cuenta: pickedAcct('ivCta'), origen: pickedOrig('ivOrig') };
-  applyMov(m); M.push(m); addXP(25); checkin(); checkAch(); commit({ add: [m] }); closeSheet(); render(); toast('IVA registrado');
+  applyMov(m); M.push(m); addXP(25); checkin(); checkAch(); commit({ add: [m] }); render(); verifySheet(m.id); toast('IVA registrado');
 }
 function fundOpts() {
   return [['cofre', 'Cofre de ataque'], ['iva', 'Sobre IVA']].concat(S.goals.filter(g => !goalLocked(g)).map(g => [g.id, g.name]));
@@ -2902,6 +3010,9 @@ const ACT = {
   saveFijo: d => saveFijo(d.id), delFijo: (d, el) => armed(el) && delFijo(d.id),
   fijoPay: d => fijoPaySheet(d.id), doFijoPay: d => doFijoPay(d.id),
   cobro: () => cobroSheet(),
+  verify: d => verifySheet(d.id), verifyDone: () => verifyDone(),
+  verifyOk: d => { const ids = (d.accts || '').split(',').filter(Boolean); ids.forEach(i => { const a = acct(i); if (a) a.conc = today(); }); commit(); render(); haptic(15); toast('Todo correcto: ' + ids.map(acctName).join(' y ') + ' cuadra con tu banco'); verifyDone(); },
+  linkFijo: d => linkFijo(d.id), editMov: d => editMovSheet(d.id), saveMovEdit: d => saveMovEdit(d.id),
   hormigas: () => hormigaSheet(),
   saveHormiga: () => { S.settings.hormiga = parseN($('#hmMax').value) || 50000; commit(); render(); hormigaSheet(); toast('Hormiga: compras de hasta ' + gs(S.settings.hormiga)); },
   commitNoLoans: () => { S.settings.sinPrestamosDesde = today(); addXP(50); confetti(); commit(); render(); toast('Compromiso tomado: cero préstamos nuevos. Desde hoy se invierte de lo que ganás.'); },
